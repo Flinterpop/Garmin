@@ -14,8 +14,8 @@ Two executables:
 | Piece | State |
 |---|---|
 | FIT decoder (`src/fit`) | Done; verified against Garmin-native and Zwift activity files, 10 unit tests |
-| Garmin Connect login + endpoints (`src/gc`) | Written to the `garth` handshake; **not yet exercised against a live account** |
-| SQLite store + importers (`src/store`) | Done; FIT import verified on real files, JSON importers written to the documented response shapes |
+| Garmin Connect login + endpoints (`src/gc`) | Done; verified against a live account (login with MFA, all daily endpoints, weight, activities, wellness FIT zips) |
+| SQLite store + importers (`src/store`) | Done; verified on live JSON and on 208 files copied off a fenix 7 |
 | Plots | Not started (see Next steps) |
 
 Notes:
@@ -42,7 +42,7 @@ gsync login                     # prompts for email, password, MFA code; tokens 
 gsync whoami
 gsync sync --days 30            # daily data + wellness FIT + activities for the last 30 days
 gsync sync --from 2026-01-01 --to 2026-03-31 --activities 200
-gsync import E:\GARMIN\Activity E:\GARMIN\Monitor      # watch mounted as USB drive
+gsync import <staging>\Activity <staging>\Monitor       # files copied off the watch (see below)
 gsync stats
 gsync get /usersummary-service/usersummary/daily/<displayName>?calendarDate=2026-09-17
 
@@ -52,6 +52,25 @@ fitdump some.fit --csv out.csv  # mesg,timestamp,field,value,units
 ```
 
 Options: `--data <dir>` (default `%LOCALAPPDATA%\GarminSync\data`), `--no-fit`, `--force`, `--out <file>`.
+
+### Getting files off the watch
+
+Recent watches (fenix 7 and similar) connect over **MTP**, not as a drive letter, so `gsync import` cannot read them directly. Copy the folders out through the Windows Shell first — this PowerShell snippet pulls `Activity`, `Monitor` and `SUMMARY` into the data directory, after which `gsync import` on that folder does the rest:
+
+```powershell
+$sh = New-Object -ComObject Shell.Application
+$dev = $sh.NameSpace(17).Items() | Where-Object Name -eq 'fenix 7'
+$g = ($dev.GetFolder.Items() | Select-Object -First 1).GetFolder.Items() | Where-Object Name -eq 'GARMIN'
+$base = Join-Path $env:LOCALAPPDATA 'GarminSync\datait\watchenix7'
+foreach ($name in 'Activity','Monitor','SUMMARY') {
+  $src = $g.GetFolder.Items() | Where-Object Name -eq $name
+  $dst = Join-Path $base $name; New-Item -ItemType Directory -Force $dst | Out-Null
+  $sh.NameSpace($dst).CopyHere($src.GetFolder.Items(), 16 + 4 + 1024)   # async; wait for the file count
+}
+gsync import $base
+```
+
+`Sleep`, `Metrics` and `HRVStatus` on the watch are usually empty because the watch purges them once Garmin Connect has them; `gsync sync` fetches the same files from Connect as the daily wellness zips.
 
 Tokens live in `%LOCALAPPDATA%\GarminSync\tokens.bin`, encrypted with DPAPI to the current Windows user. The password is never written anywhere. The OAuth1 token is good for about a year; bearer tokens are re-minted from it automatically.
 
@@ -98,6 +117,7 @@ The FIT decoder is written from the protocol specification rather than wrapping 
 
 ## Next steps
 
-1. Run `gsync login` and `gsync sync --days 7` against the real account; fix whatever Garmin's current responses disagree with (the raw JSON is saved for exactly this).
+1. Backfill: `gsync sync --from 2022-12-01 --activities 500`.
 2. Plots: a Win32 viewer over `garmin.db`. Preferred route is Dear ImGui + ImPlot on a D3D11/Win32 backend (both in vcpkg), which gives zoomable time-series, overlays of HR/stress/Body Battery per day, weight trend, and per-activity traces with little code.
-3. Live chest-strap HR over BLE (WinRT `GattCharacteristic`), writing to `hr_sample` with `source='ble'`.
+3. Read the watch over MTP from `gsync` directly (Windows Portable Devices API) instead of the PowerShell copy step.
+4. Live chest-strap HR over BLE (WinRT `GattCharacteristic`), writing to `hr_sample` with `source='ble'`.

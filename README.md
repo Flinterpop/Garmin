@@ -1,4 +1,4 @@
-# Garmin
+# JREAP_TestTool
 
 *Last updated: 18 Sep 2026*
 

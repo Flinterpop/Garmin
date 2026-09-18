@@ -61,7 +61,7 @@ Recent watches (fenix 7 and similar) connect over **MTP**, not as a drive letter
 $sh = New-Object -ComObject Shell.Application
 $dev = $sh.NameSpace(17).Items() | Where-Object Name -eq 'fenix 7'
 $g = ($dev.GetFolder.Items() | Select-Object -First 1).GetFolder.Items() | Where-Object Name -eq 'GARMIN'
-$base = Join-Path $env:LOCALAPPDATA 'GarminSync\datait\watchenix7'
+$base = Join-Path $env:LOCALAPPDATA 'GarminSync\data\fit\watch\fenix7'
 foreach ($name in 'Activity','Monitor','SUMMARY') {
   $src = $g.GetFolder.Items() | Where-Object Name -eq $name
   $dst = Join-Path $base $name; New-Item -ItemType Directory -Force $dst | Out-Null

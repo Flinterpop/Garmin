@@ -303,10 +303,47 @@ bool import_hrv(Db& db, const std::string& date, const json& j, ImportCounts& c,
   return txn.commit(err);
 }
 
+namespace {
+
+// One weight-service measurement object -> a `weight` row. Body-composition
+// fields come back as 0 when the impedance measurement did not take, which
+// is "unknown", not a value, so zeros are stored as NULL.
+bool weight_row(Stmt& s, const json& e, ImportCounts& c, std::string& err) {
+  auto ts = opt_ms_to_s(e, "timestampGMT");
+  if (!ts) ts = opt_ms_to_s(e, "date");
+  const auto grams = opt_double(e, "weight");
+  if (!ts || !grams || *grams <= 0.0) return true;
+  auto nz = [](const std::optional<double>& v) -> std::optional<double> {
+    if (!v || *v <= 0.0) return std::nullopt;
+    return v;
+  };
+  auto to_kg = [&nz](const std::optional<double>& g) -> std::optional<double> {
+    const auto v = nz(g);
+    if (!v) return std::nullopt;
+    return *v / 1000.0;
+  };
+  s.bind(1, *ts)
+      .bind(2, *grams / 1000.0)
+      .bind(3, nz(opt_double(e, "bmi")))
+      .bind(4, nz(opt_double(e, "bodyFat")))
+      .bind(5, nz(opt_double(e, "bodyWater")))
+      .bind(6, to_kg(opt_double(e, "boneMass")))
+      .bind(7, to_kg(opt_double(e, "muscleMass")))
+      .bind(8, nz(opt_double(e, "visceralFat")))
+      .bind(9, opt_int(e, "metabolicAge"))
+      .bind(10, opt_str(e, "sourceType"))
+      .bind(11, e.dump());
+  if (!s.run(err)) return false;
+  ++c.rows;
+  return true;
+}
+
+}  // namespace
+
 bool import_weight(Db& db, const json& j, ImportCounts& c, std::string& err) {
-  if (!j.is_object() || !j.contains("dailyWeightSummaries")) return true;
-  const json& days = j.at("dailyWeightSummaries");
-  if (!days.is_array()) return true;
+  // weight/dateRange returns {"dateWeightList": [measurement, ...]}; older
+  // shapes nest them as dailyWeightSummaries[].allWeightMetrics[]. Accept both.
+  if (!j.is_object()) return true;
   Txn txn(db);
   if (!txn.begin(err)) return false;
   Stmt s(db,
@@ -314,6 +351,16 @@ bool import_weight(Db& db, const json& j, ImportCounts& c, std::string& err) {
          " bone_mass_kg, muscle_mass_kg, visceral_fat, metabolic_age, source, json)"
          " VALUES(?,?,?,?,?,?,?,?,?,?,?)");
   if (!stmt_ready(s, db, err)) return false;
+  if (j.contains("dateWeightList") && j.at("dateWeightList").is_array()) {
+    const json& list = j.at("dateWeightList");
+    const size_t n = std::min(list.size(), kMaxJsonArray);
+    for (size_t i = 0; i < n; ++i) {
+      if (!weight_row(s, list[i], c, err)) return false;
+    }
+  }
+  if (!j.contains("dailyWeightSummaries")) return txn.commit(err);
+  const json& days = j.at("dailyWeightSummaries");
+  if (!days.is_array()) return txn.commit(err);
   const size_t nd = std::min(days.size(), kMaxJsonArray);
   for (size_t d = 0; d < nd; ++d) {
     const json& day = days[d];
@@ -322,28 +369,7 @@ bool import_weight(Db& db, const json& j, ImportCounts& c, std::string& err) {
     if (!metrics.is_array()) continue;
     const size_t nm = std::min(metrics.size(), kMaxJsonArray);
     for (size_t m = 0; m < nm; ++m) {
-      const json& e = metrics[m];
-      auto ts = opt_ms_to_s(e, "timestampGMT");
-      if (!ts) ts = opt_ms_to_s(e, "date");
-      const auto grams = opt_double(e, "weight");
-      if (!ts || !grams || *grams <= 0.0) continue;
-      auto to_kg = [](const std::optional<double>& g) -> std::optional<double> {
-        if (!g) return std::nullopt;
-        return *g / 1000.0;
-      };
-      s.bind(1, *ts)
-          .bind(2, *grams / 1000.0)
-          .bind(3, opt_double(e, "bmi"))
-          .bind(4, opt_double(e, "bodyFat"))
-          .bind(5, opt_double(e, "bodyWater"))
-          .bind(6, to_kg(opt_double(e, "boneMass")))
-          .bind(7, to_kg(opt_double(e, "muscleMass")))
-          .bind(8, opt_double(e, "visceralFat"))
-          .bind(9, opt_int(e, "metabolicAge"))
-          .bind(10, opt_str(e, "sourceType"))
-          .bind(11, e.dump());
-      if (!s.run(err)) return false;
-      ++c.rows;
+      if (!weight_row(s, metrics[m], c, err)) return false;
     }
   }
   return txn.commit(err);

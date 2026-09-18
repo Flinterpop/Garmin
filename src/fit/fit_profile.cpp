@@ -523,8 +523,7 @@ const char* sport_name(uint8_t sport) {
     case 53: return "diving";
     case 62: return "hiit";
     case 64: return "racket";
-    case 76: return "water_tubing";
-    case 77: return "wakesurfing";
+    case 73: return "ice_hockey";  // observed on fenix 7 (Connect typeKey ice_hockey)
     default: return "unknown";
   }
 }

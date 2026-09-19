@@ -9,6 +9,7 @@
 #include <shellapi.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -41,6 +42,9 @@ constexpr int kIdmViewActivity = 103;
 constexpr int kIdmViewHockey = 104;
 constexpr int kIdmViewCalendar = 105;
 constexpr int kIdmViewMap = 106;
+constexpr int kIdmViewSki = 107;
+constexpr int kIdmViewCompare = 108;
+constexpr int kIdmViewSleep = 109;
 constexpr UINT kMsgTileReady = WM_APP + 1;
 constexpr int kIdmFit = 201;
 constexpr int kIdmZoomIn = 202;
@@ -51,7 +55,7 @@ constexpr double kWheelZoomPerNotch = 0.8;
 constexpr double kKeyZoom = 0.7;
 constexpr float kKeyPanFrac = 0.1f;
 
-enum class Mode { kDay, kTrends, kActivity, kHockey, kCalendar, kMap };
+enum class Mode { kDay, kTrends, kActivity, kHockey, kCalendar, kMap, kSki, kCompare, kSleep };
 
 struct App {
   HWND hwnd = nullptr;
@@ -74,6 +78,8 @@ struct App {
   std::vector<gview::GameEntry> games;
   std::vector<gview::MonthEntry> months;
   std::vector<gview::ActivityEntry> gps_activities;
+  std::vector<gview::SkiEntry> ski_days;
+  std::vector<gview::NightEntry> nights;
   double hockey_hr_max = 190.0;
   float scale = 1.0f;
   bool dragging = false;
@@ -166,13 +172,45 @@ void fill_list(App& a) {
     case Mode::kMap:
       for (const auto& e : a.gps_activities) add(e.label);
       break;
+    case Mode::kSki:
+      for (const auto& e : a.ski_days) add(e.label);
+      break;
+    case Mode::kCompare:
+      for (const auto& e : a.activities) add(e.label);
+      break;
+    case Mode::kSleep:
+      for (const auto& e : a.nights) add(e.label);
+      break;
   }
   SendMessageW(a.list, WM_SETREDRAW, TRUE, 0);
   InvalidateRect(a.list, nullptr, TRUE);
 }
 
+// Extended-selection list: plain click selects one, Ctrl-click adds.
+// Returns the selected indices in list order.
+std::vector<int> selected_indices(const App& a) {
+  std::vector<int> out;
+  const int n = static_cast<int>(SendMessageW(a.list, LB_GETSELCOUNT, 0, 0));
+  if (n <= 0) return out;
+  out.resize(static_cast<size_t>(std::min(n, 64)));
+  const int got = static_cast<int>(
+      SendMessageW(a.list, LB_GETSELITEMS, static_cast<WPARAM>(out.size()),
+                   reinterpret_cast<LPARAM>(out.data())));
+  out.resize(static_cast<size_t>(std::max(got, 0)));
+  return out;
+}
+
+void select_only(App& a, int index) {
+  SendMessageW(a.list, LB_SETSEL, FALSE, static_cast<LPARAM>(-1));
+  if (index >= 0) {
+    SendMessageW(a.list, LB_SETSEL, TRUE, static_cast<LPARAM>(index));
+    SendMessageW(a.list, LB_SETCARETINDEX, static_cast<WPARAM>(index), FALSE);
+  }
+}
+
 void show_selection(App& a) {
-  const int sel = static_cast<int>(SendMessageW(a.list, LB_GETCURSEL, 0, 0));
+  const std::vector<int> picked = selected_indices(a);
+  const int sel = picked.empty() ? -1 : picked.front();
   plot::Figure fig;
   std::string title;
   if (sel >= 0) {
@@ -214,6 +252,26 @@ void show_selection(App& a) {
           a.mapw.set_track(std::move(t));
         }
         break;
+      case Mode::kSki:
+        if (static_cast<size_t>(sel) < a.ski_days.size()) {
+          const gview::SkiEntry& e = a.ski_days[static_cast<size_t>(sel)];
+          fig = e.season ? gview::load_ski_season(a.db) : gview::load_ski_day(a.db, e);
+        }
+        break;
+      case Mode::kCompare:
+        if (picked.size() >= 2 && static_cast<size_t>(picked[1]) < a.activities.size()) {
+          fig = gview::load_compare(a.db, a.activities[static_cast<size_t>(picked[0])],
+                                    a.activities[static_cast<size_t>(picked[1])]);
+        } else if (static_cast<size_t>(sel) < a.activities.size()) {
+          fig = gview::load_activity(a.db, a.activities[static_cast<size_t>(sel)]);
+          fig.title = "Compare: Ctrl-click a second activity   (" + fig.title + ")";
+        }
+        break;
+      case Mode::kSleep:
+        if (static_cast<size_t>(sel) < a.nights.size()) {
+          fig = gview::load_night(a.db, a.nights[static_cast<size_t>(sel)]);
+        }
+        break;
     }
   }
   if (a.mode != Mode::kCalendar && a.mode != Mode::kMap) {
@@ -237,9 +295,11 @@ void reload(App& a) {
   a.games = gview::list_games(a.db);
   a.months = gview::list_months(a.db);
   a.gps_activities = gview::list_gps_activities(a.db);
+  a.ski_days = gview::list_ski_days(a.db);
+  a.nights = gview::list_nights(a.db);
   a.hockey_hr_max = gview::hockey_hr_max(a.db);
   fill_list(a);
-  SendMessageW(a.list, LB_SETCURSEL, 0, 0);
+  select_only(a, 0);
   show_selection(a);
 }
 
@@ -247,9 +307,9 @@ void set_mode(App& a, Mode m) {
   a.mode = m;
   HMENU menu = GetMenu(a.hwnd);
   const int id = kIdmViewDay + static_cast<int>(m);
-  CheckMenuRadioItem(menu, kIdmViewDay, kIdmViewMap, id, MF_BYCOMMAND);
+  CheckMenuRadioItem(menu, kIdmViewDay, kIdmViewSleep, id, MF_BYCOMMAND);
   fill_list(a);
-  SendMessageW(a.list, LB_SETCURSEL, 0, 0);
+  select_only(a, 0);
   show_selection(a);
 }
 
@@ -279,12 +339,13 @@ void paint(App& a) {
 
 void move_list_selection(App& a, int delta) {
   const int count = static_cast<int>(SendMessageW(a.list, LB_GETCOUNT, 0, 0));
-  int sel = static_cast<int>(SendMessageW(a.list, LB_GETCURSEL, 0, 0));
+  const std::vector<int> picked = selected_indices(a);
+  int sel = picked.empty() ? -1 : picked.front();
   if (count <= 0) return;
   sel = sel < 0 ? 0 : sel + delta;
   if (sel < 0) sel = 0;
   if (sel >= count) sel = count - 1;
-  SendMessageW(a.list, LB_SETCURSEL, sel, 0);
+  select_only(a, sel);
   show_selection(a);
 }
 
@@ -297,6 +358,9 @@ HMENU build_menu() {
   AppendMenuW(view, MF_STRING, kIdmViewHockey, L"&Hockey\t4");
   AppendMenuW(view, MF_STRING, kIdmViewCalendar, L"&Calendar\t5");
   AppendMenuW(view, MF_STRING, kIdmViewMap, L"&Map\t6");
+  AppendMenuW(view, MF_STRING, kIdmViewSki, L"&Ski\t7");
+  AppendMenuW(view, MF_STRING, kIdmViewCompare, L"C&ompare\t8");
+  AppendMenuW(view, MF_STRING, kIdmViewSleep, L"S&leep\t9");
   AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(view, MF_STRING, kIdmFit, L"&Fit to data\tHome");
   AppendMenuW(view, MF_STRING, kIdmZoomIn, L"Zoom &in\t+");
@@ -307,7 +371,7 @@ HMENU build_menu() {
   AppendMenuW(data, MF_STRING, kIdmExit, L"E&xit");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(view), L"&View");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(data), L"&Data");
-  CheckMenuRadioItem(bar, kIdmViewDay, kIdmViewMap, kIdmViewDay, MF_BYCOMMAND);
+  CheckMenuRadioItem(bar, kIdmViewDay, kIdmViewSleep, kIdmViewDay, MF_BYCOMMAND);
   return bar;
 }
 
@@ -339,7 +403,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       a->scale = dpi_scale(hwnd);
       a->list = CreateWindowExW(0, L"LISTBOX", nullptr,
                                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY |
-                                    LBS_NOINTEGRALHEIGHT | WS_BORDER,
+                                    LBS_NOINTEGRALHEIGHT | LBS_EXTENDEDSEL | WS_BORDER,
                                 0, 0, 10, 10, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kListId)), nullptr,
                                 nullptr);
       SetWindowSubclass(a->list, list_proc, 0, 0);
@@ -385,6 +449,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case kIdmViewHockey: set_mode(*a, Mode::kHockey); break;
         case kIdmViewCalendar: set_mode(*a, Mode::kCalendar); break;
         case kIdmViewMap: set_mode(*a, Mode::kMap); break;
+        case kIdmViewSki: set_mode(*a, Mode::kSki); break;
+        case kIdmViewCompare: set_mode(*a, Mode::kCompare); break;
+        case kIdmViewSleep: set_mode(*a, Mode::kSleep); break;
         case kIdmFit: a->widget.fit_x(); InvalidateRect(hwnd, nullptr, FALSE); break;
         case kIdmZoomIn:
         case kIdmZoomOut: {
@@ -503,6 +570,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case '4': set_mode(*a, Mode::kHockey); return 0;
         case '5': set_mode(*a, Mode::kCalendar); return 0;
         case '6': set_mode(*a, Mode::kMap); return 0;
+        case '7': set_mode(*a, Mode::kSki); return 0;
+        case '8': set_mode(*a, Mode::kCompare); return 0;
+        case '9': set_mode(*a, Mode::kSleep); return 0;
         default: return DefWindowProcW(hwnd, msg, wp, lp);
       }
       InvalidateRect(hwnd, nullptr, FALSE);

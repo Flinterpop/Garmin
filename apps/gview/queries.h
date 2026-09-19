@@ -40,6 +40,20 @@ struct MonthEntry {
   std::string label;  // "September 2026"
 };
 
+struct SkiEntry {
+  int64_t fit_file_id = 0;
+  int64_t start_ts = 0;
+  std::string label;
+  bool season = false;
+};
+
+struct NightEntry {
+  std::string date;
+  int64_t start_ts = 0;
+  int64_t end_ts = 0;
+  std::string label;
+};
+
 struct TrendRange {
   std::string label;
   int days;  // 0 = everything
@@ -52,6 +66,8 @@ std::vector<GameEntry> list_games(store::Db& db);  // first entry is the season 
 
 std::vector<MonthEntry> list_months(store::Db& db);
 std::vector<ActivityEntry> list_gps_activities(store::Db& db);
+std::vector<SkiEntry> list_ski_days(store::Db& db);  // first entry is the season overview
+std::vector<NightEntry> list_nights(store::Db& db);
 
 // Robust HR max across all hockey sessions (for zone boundaries).
 double hockey_hr_max(store::Db& db);
@@ -63,6 +79,15 @@ plot::Figure load_game(store::Db& db, const GameEntry& g, double hr_max);
 plot::Figure load_season(store::Db& db, double hr_max);
 plot::MonthData load_month(store::Db& db, int year, int month);
 map::Track load_track(store::Db& db, const ActivityEntry& a);
+plot::Figure load_ski_day(store::Db& db, const SkiEntry& e);
+plot::Figure load_ski_season(store::Db& db);
+plot::Figure load_compare(store::Db& db, const ActivityEntry& a, const ActivityEntry& b);
+plot::Figure load_night(store::Db& db, const NightEntry& n);
+
+// Trailing-window baseline (mean +/- 1 sd) for a daily series; appends a
+// kRange band, a mean line and an "unusual" point series to the panel.
+void add_baseline(plot::Panel& panel, const plot::Series& daily, int window_days,
+                  plot::YAxisSide axis);
 
 // Local midnight (Unix seconds) for a YYYY-MM-DD date; 0 on bad input.
 int64_t local_midnight_of(const std::string& date);

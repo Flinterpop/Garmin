@@ -46,7 +46,8 @@ target_link_libraries(plotlib PUBLIC gutil d2d1 dwrite)
 
 # analysis: derived metrics over decoded data (pure functions)
 add_library(analysislib STATIC
-  analysis/hockey.h analysis/hockey.cpp)
+  analysis/hockey.h analysis/hockey.cpp
+  analysis/ski.h analysis/ski.cpp)
 target_include_directories(analysislib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(analysislib PUBLIC gutil)
 

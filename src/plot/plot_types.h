@@ -49,6 +49,7 @@ enum class Style : uint8_t {
   kPoints,  // discrete markers (plus a faint line)
   kBars,    // vertical bars from 0 to y, bar width = bar_width seconds
   kBand,    // filled rectangles from x[i] to x2[i], full panel height
+  kRange,   // filled area between y[i] (low) and y2[i] (high)
 };
 
 enum class YAxisSide : uint8_t { kLeft, kRight };
@@ -58,16 +59,20 @@ struct Series {
   std::string units;
   std::vector<double> x;   // ascending
   std::vector<double> y;   // same length as x
-  std::vector<double> x2;  // kBand only: interval end per point
+  std::vector<double> x2;  // kBand: interval end per point; kBars: optional bar end
+  std::vector<double> y2;  // kRange: upper value per point
   Color color;
   Style style = Style::kLine;
   YAxisSide axis = YAxisSide::kLeft;
   float width = 1.5f;
   double bar_width = 0.0;  // kBars: seconds (ignored when x2 gives per-bar ends)
+  double gap_break = 0.0;  // kLine/kPoints: break the line where x jumps by more than this
+  bool in_legend = true;   // helper series (baselines) can stay out of the legend
   bool valid() const {
     if (x.size() != y.size()) return false;
     if (style == Style::kBand) return x2.size() == x.size();
     if (style == Style::kBars) return x2.empty() || x2.size() == x.size();
+    if (style == Style::kRange) return y2.size() == x.size();
     return true;
   }
   double bar_end(size_t i) const { return x2.empty() ? x[i] + bar_width : x2[i]; }

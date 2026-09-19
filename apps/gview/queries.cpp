@@ -1,5 +1,6 @@
 #include "queries.h"
 
+#include <cmath>
 #include <cstdio>
 #include <ctime>
 
@@ -62,6 +63,8 @@ Series make_series(const char* name, const char* units, plot::Color c, Style sty
   s.style = style;
   s.axis = axis;
   s.width = width;
+  // Daily points and baselines should not be joined across missing weeks.
+  if (style == Style::kPoints || style == Style::kLine) s.gap_break = 0.0;
   return s;
 }
 
@@ -120,7 +123,8 @@ std::vector<ActivityEntry> list_activities(store::Db& db) {
                  "SELECT s.fit_file_id, s.start_ts, s.sport, s.distance_m, s.timer_s,"
                  " a.name, a.type FROM activity_session s"
                  " LEFT JOIN activity a ON a.fit_file_id = s.fit_file_id"
-                 " ORDER BY s.start_ts DESC");
+                 " ORDER BY s.start_ts DESC, (SELECT COUNT(*) FROM activity_record r"
+                 "   WHERE r.fit_file_id = s.fit_file_id) DESC");
   G_REQUIRE_RET(st.ok(), out);
   int64_t last_start = -1;
   for (size_t i = 0; i < kMaxListEntries && st.row(); ++i) {
@@ -155,6 +159,56 @@ std::vector<ActivityEntry> list_activities(store::Db& db) {
 std::vector<TrendRange> trend_ranges() {
   return {{"Last 30 days", 30}, {"Last 90 days", 90}, {"Last 6 months", 183},
           {"Last year", 365},   {"Last 2 years", 730}, {"Everything", 0}};
+}
+
+// -------------------------------------------------------------- baseline
+
+void add_baseline(plot::Panel& panel, const Series& daily, int window_days, YAxisSide axis) {
+  G_ASSERT(window_days > 0);
+  constexpr size_t kMinSamples = 7;
+  const size_t n = daily.x.size();
+  if (n < kMinSamples) return;
+  Series band = make_series((daily.name + " 30d band").c_str(), "", plot::rgb(0x999999, 0.18f),
+                            Style::kRange, axis);
+  Series mean = make_series((daily.name + " 30d mean").c_str(), daily.units.c_str(),
+                            plot::rgb(0x777777), Style::kLine, axis, 1.0f);
+  mean.gap_break = 4.0 * kDay;
+  Series odd = make_series("Unusual (>2 sd)", daily.units.c_str(), plot::rgb(0x111111),
+                           Style::kPoints, axis);
+  band.in_legend = false;
+  mean.in_legend = false;
+  odd.gap_break = 0.5 * kDay;  // never join the flagged days
+  const double window = static_cast<double>(window_days) * kDay;
+  size_t lo = 0;
+  double sum = 0.0;
+  double sum2 = 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    sum += daily.y[i];
+    sum2 += daily.y[i] * daily.y[i];
+    while (lo < i && daily.x[i] - daily.x[lo] > window) {
+      sum -= daily.y[lo];
+      sum2 -= daily.y[lo] * daily.y[lo];
+      ++lo;
+    }
+    const size_t count = i - lo + 1;
+    if (count < kMinSamples) continue;
+    const double m = sum / static_cast<double>(count);
+    const double var = std::max(0.0, sum2 / static_cast<double>(count) - m * m);
+    const double sd = std::sqrt(var);
+    band.x.push_back(daily.x[i]);
+    band.y.push_back(m - sd);
+    band.y2.push_back(m + sd);
+    mean.x.push_back(daily.x[i]);
+    mean.y.push_back(m);
+    if (std::fabs(daily.y[i] - m) > 2.0 * sd && sd > 0.0) {
+      odd.x.push_back(daily.x[i]);
+      odd.y.push_back(daily.y[i]);
+    }
+  }
+  if (band.x.size() < 2) return;
+  panel.series.insert(panel.series.begin(), std::move(band));
+  panel.series.push_back(std::move(mean));
+  if (!odd.x.empty()) panel.series.push_back(std::move(odd));
 }
 
 // -------------------------------------------------------------------- day
@@ -389,14 +443,20 @@ Figure load_trends(store::Db& db, int days) {
     Panel p;
     p.title = "Resting HR / HRV";
     Series rhr = make_series("Resting HR", "bpm", colors::kHeartRate, Style::kPoints);
+    rhr.gap_break = 4.0 * kDay;
     load_daily("SELECT date, resting_hr FROM daily_summary WHERE date BETWEEN ? AND ? ORDER BY date",
                rhr, 43200.0);
     Series hrv = make_series("HRV (night avg)", "ms", colors::kHrv, Style::kPoints,
                              YAxisSide::kRight);
+    hrv.gap_break = 4.0 * kDay;
     load_daily("SELECT date, last_night_avg FROM hrv_daily WHERE date BETWEEN ? AND ? ORDER BY date",
                hrv, 43200.0);
+    add_baseline(p, rhr, 30, YAxisSide::kLeft);
     p.series.push_back(std::move(rhr));
-    if (!hrv.x.empty()) p.series.push_back(std::move(hrv));
+    if (!hrv.x.empty()) {
+      add_baseline(p, hrv, 30, YAxisSide::kRight);
+      p.series.push_back(std::move(hrv));
+    }
     fig.panels.push_back(std::move(p));
   }
   {
@@ -415,6 +475,11 @@ Figure load_trends(store::Db& db, int days) {
     Series score = make_series("Score", "", colors::kStress, Style::kPoints, YAxisSide::kRight);
     load_daily("SELECT date, score FROM sleep WHERE date BETWEEN ? AND ? ORDER BY date", score,
                43200.0);
+    // Baseline on sleep hours uses bar starts as x; shift to noon for the line.
+    Series hours_pts = hours;
+    for (double& x : hours_pts.x) x += 43200.0;
+    hours_pts.name = "Sleep";
+    add_baseline(p, hours_pts, 30, YAxisSide::kLeft);
     p.series.push_back(std::move(hours));
     if (!score.x.empty()) p.series.push_back(std::move(score));
     fig.panels.push_back(std::move(p));

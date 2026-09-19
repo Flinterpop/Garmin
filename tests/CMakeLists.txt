@@ -7,7 +7,8 @@ add_executable(garmin_tests
   test_ticks.cpp
   test_decimate.cpp
   test_hockey.cpp
-  test_mercator.cpp)
+  test_mercator.cpp
+  test_ski.cpp)
 target_link_libraries(garmin_tests PRIVATE fitlib gclib plotlib maplib analysislib gutil Catch2::Catch2WithMain)
 include(Catch)
 catch_discover_tests(garmin_tests)

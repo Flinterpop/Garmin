@@ -17,7 +17,8 @@ std::vector<ActivityEntry> list_gps_activities(store::Db& db) {
                  " LEFT JOIN activity a ON a.fit_file_id = s.fit_file_id"
                  " WHERE EXISTS (SELECT 1 FROM activity_record r"
                  "               WHERE r.fit_file_id = s.fit_file_id AND r.lat IS NOT NULL)"
-                 " ORDER BY s.start_ts DESC");
+                 " ORDER BY s.start_ts DESC, (SELECT COUNT(*) FROM activity_record r"
+                 "   WHERE r.fit_file_id = s.fit_file_id) DESC");
   G_REQUIRE_RET(st.ok(), out);
   int64_t last = -1;
   for (size_t i = 0; i < kMaxListEntries && st.row(); ++i) {

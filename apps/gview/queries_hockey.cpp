@@ -23,7 +23,9 @@ constexpr size_t kMaxGames = 2000;
 constexpr const char* kGameSql =
     "SELECT s.fit_file_id, s.start_ts, s.timer_s, s.avg_hr, s.max_hr FROM activity_session s"
     " LEFT JOIN activity a ON a.fit_file_id = s.fit_file_id"
-    " WHERE s.sport = 73 OR a.type = 'ice_hockey' ORDER BY s.start_ts DESC";
+    " WHERE s.sport = 73 OR a.type = 'ice_hockey'"
+    " ORDER BY s.start_ts DESC, (SELECT COUNT(*) FROM activity_record r"
+    "   WHERE r.fit_file_id = s.fit_file_id) DESC";
 
 Series make(const char* name, const char* units, plot::Color c, Style style,
             YAxisSide axis = YAxisSide::kLeft) {
@@ -213,7 +215,10 @@ Figure load_season(store::Db& db, double hr_max) {
     std::reverse(s.y.begin(), s.y.end());
     std::reverse(s.x2.begin(), s.x2.end());
   };
-  for (Series* s : {&avg, &mx, &count, &on, &z4, &dur}) flip(*s);
+  for (Series* s : {&avg, &mx, &count, &on, &z4, &dur}) {
+    flip(*s);
+    s->gap_break = 21.0 * 86400.0;
+  }
 
   {
     Panel p;

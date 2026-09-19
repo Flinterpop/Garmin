@@ -206,8 +206,10 @@ void PlotWidget::auto_range(const Panel& panel, PanelLayout& L) const {
       if (!std::isfinite(sr.y[i])) continue;
       if (right) {
         grow(any_r, lo_r, hi_r, sr.y[i]);
+        if (sr.style == Style::kRange) grow(any_r, lo_r, hi_r, sr.y2[i]);
       } else {
         grow(any_l, lo_l, hi_l, sr.y[i]);
+        if (sr.style == Style::kRange) grow(any_l, lo_l, hi_l, sr.y2[i]);
       }
     }
     if (sr.style == Style::kBars) {
@@ -338,6 +340,7 @@ void PlotWidget::draw_panel(ID2D1RenderTarget* rt, const Panel& panel, const Pan
     tx += measure_text_width(wt, true) + s(16.0f);
   }
   for (const Series& sr : panel.series) {
+    if (!sr.in_legend) continue;
     std::string label = sr.name;
     if (!sr.units.empty()) label += " (" + sr.units + ")";
     const std::wstring wl = widen(label);
@@ -346,7 +349,7 @@ void PlotWidget::draw_panel(ID2D1RenderTarget* rt, const Panel& panel, const Pan
     if (tx + s(14.0f) + w > rect_.right - s(4.0f)) break;
     brush_->SetColor(to_d2d(sr.color));
     const float cy = (ty + P.top) / 2.0f;
-    if (sr.style == Style::kBand || sr.style == Style::kBars) {
+    if (sr.style == Style::kBand || sr.style == Style::kBars || sr.style == Style::kRange) {
       rt->FillRectangle(D2D1::RectF(tx, cy - s(5.0f), tx + s(10.0f), cy + s(5.0f)), brush_.Get());
     } else {
       rt->DrawLine(D2D1::Point2F(tx, cy), D2D1::Point2F(tx + s(10.0f), cy), brush_.Get(),
@@ -409,10 +412,10 @@ void PlotWidget::draw_panel(ID2D1RenderTarget* rt, const Panel& panel, const Pan
   // Series, clipped to the plot area. Bands first so lines sit on top.
   rt->PushAxisAlignedClip(P, D2D1_ANTIALIAS_MODE_ALIASED);
   for (const Series& sr : panel.series) {
-    if (sr.style == Style::kBand) draw_series(rt, sr, L);
+    if (sr.style == Style::kBand || sr.style == Style::kRange) draw_series(rt, sr, L);
   }
   for (const Series& sr : panel.series) {
-    if (sr.style != Style::kBand) draw_series(rt, sr, L);
+    if (sr.style != Style::kBand && sr.style != Style::kRange) draw_series(rt, sr, L);
   }
   for (const HLine& h : panel.hlines) {
     const bool right = h.axis == YAxisSide::kRight;
@@ -455,6 +458,30 @@ void PlotWidget::draw_series(ID2D1RenderTarget* rt, const Series& sr, const Pane
     return;
   }
 
+  if (sr.style == Style::kRange) {
+    const size_t n = sr.x.size();
+    size_t i0 = static_cast<size_t>(std::lower_bound(sr.x.begin(), sr.x.end(), x0_) - sr.x.begin());
+    size_t i1 = static_cast<size_t>(std::upper_bound(sr.x.begin(), sr.x.end(), x1_) - sr.x.begin());
+    if (i0 > 0) --i0;
+    if (i1 < n) ++i1;
+    if (i1 <= i0 + 1) return;
+    ComPtr<ID2D1PathGeometry> geom;
+    ComPtr<ID2D1GeometrySink> sink;
+    G_REQUIRE_VOID(SUCCEEDED(d2d_->CreatePathGeometry(&geom)) && SUCCEEDED(geom->Open(&sink)));
+    sink->BeginFigure(D2D1::Point2F(x_to_px(sr.x[i0]), y_to_px(sr.y2[i0], lo, hi, P)),
+                      D2D1_FIGURE_BEGIN_FILLED);
+    for (size_t i = i0 + 1; i < i1; ++i) {
+      sink->AddLine(D2D1::Point2F(x_to_px(sr.x[i]), y_to_px(sr.y2[i], lo, hi, P)));
+    }
+    for (size_t i = i1; i-- > i0;) {
+      sink->AddLine(D2D1::Point2F(x_to_px(sr.x[i]), y_to_px(sr.y[i], lo, hi, P)));
+    }
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    G_REQUIRE_VOID(SUCCEEDED(sink->Close()));
+    rt->FillGeometry(geom.Get(), brush_.Get());
+    return;
+  }
+
   if (sr.style == Style::kBars) {
     const float zero = y_to_px(std::clamp(0.0, lo, hi), lo, hi, P);
     const size_t n = sr.x.size();
@@ -483,6 +510,12 @@ void PlotWidget::draw_series(ID2D1RenderTarget* rt, const Series& sr, const Pane
   sink->BeginFigure(pt(scratch_[0]), D2D1_FIGURE_BEGIN_HOLLOW);
   const size_t n = scratch_.size();
   for (size_t i = 1; i < n; ++i) {
+    if (sr.gap_break > 0.0 && scratch_[i].x - scratch_[i - 1].x > sr.gap_break) {
+      // Data gap: lift the pen instead of drawing a misleading connector.
+      sink->EndFigure(D2D1_FIGURE_END_OPEN);
+      sink->BeginFigure(pt(scratch_[i]), D2D1_FIGURE_BEGIN_HOLLOW);
+      continue;
+    }
     if (sr.style == Style::kStep) {
       sink->AddLine(D2D1::Point2F(x_to_px(scratch_[i].x), y_to_px(scratch_[i - 1].y, lo, hi, P)));
     }
@@ -530,7 +563,7 @@ void PlotWidget::collect_hover(double xq, std::vector<HoverEntry>& out) const {
   const double tol = (x1_ - x0_) * kHoverToleranceFrac;
   for (const Panel& p : fig_.panels) {
     for (const Series& sr : p.series) {
-      if (sr.x.empty() || out.size() >= kMaxHoverEntries) continue;
+      if (sr.x.empty() || out.size() >= kMaxHoverEntries || sr.style == Style::kRange) continue;
       if (sr.style == Style::kBand) {
         const auto it = std::upper_bound(sr.x.begin(), sr.x.end(), xq);
         if (it == sr.x.begin()) continue;

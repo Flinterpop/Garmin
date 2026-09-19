@@ -25,7 +25,7 @@ Notes:
 
 - The Connect API is Garmin's unofficial app API (the same one `garth` / `python-garminconnect` use). Garmin can change it without notice; when that happens `gsync get <path>` is the debugging tool. The wellness-zip endpoint answers Cloudflare 504 for older dates fairly often; `gsync` retries 5xx with backoff and leaves failed days unmarked so the next sync picks them up.
 - Weight is stored in kg and displayed in pounds.
-- The Map view fetches tiles from `tile.openstreetmap.org` (the only traffic that does not go to Garmin), with an identifying User-Agent and an on-disk cache in `%LOCALAPPDATA%\GarminSync	iles`, as the OSM tile usage policy asks. Only tiles currently on screen are requested.
+- The Map view fetches tiles from `tile.openstreetmap.org` (the only traffic that does not go to Garmin), with an identifying User-Agent and an on-disk cache in `%LOCALAPPDATA%\GarminSync\tiles`, as the OSM tile usage policy asks. Only tiles currently on screen are requested.
 - The OAuth consumer key pair is fetched from the public location `garth` publishes, or can be supplied via `GARMIN_OAUTH_CONSUMER_KEY` / `GARMIN_OAUTH_CONSUMER_SECRET`.
 
 ## Build

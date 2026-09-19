@@ -49,3 +49,11 @@ add_library(analysislib STATIC
   analysis/hockey.h analysis/hockey.cpp)
 target_include_directories(analysislib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(analysislib PUBLIC gutil)
+
+# map: OSM tiles + GPS track rendering (Direct2D, WIC)
+add_library(maplib STATIC
+  map/mercator.h map/mercator.cpp
+  map/tile_cache.h map/tile_cache.cpp
+  map/map_widget.h map/map_widget.cpp)
+target_include_directories(maplib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(maplib PUBLIC gutil gclib plotlib d2d1 dwrite windowscodecs ole32)

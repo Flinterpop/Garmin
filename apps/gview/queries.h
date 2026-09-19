@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "map/map_widget.h"
 #include "plot/calendar_widget.h"
 #include "plot/plot_types.h"
 #include "store/db.h"
@@ -50,6 +51,7 @@ std::vector<TrendRange> trend_ranges();
 std::vector<GameEntry> list_games(store::Db& db);  // first entry is the season overview
 
 std::vector<MonthEntry> list_months(store::Db& db);
+std::vector<ActivityEntry> list_gps_activities(store::Db& db);
 
 // Robust HR max across all hockey sessions (for zone boundaries).
 double hockey_hr_max(store::Db& db);
@@ -60,6 +62,7 @@ plot::Figure load_trends(store::Db& db, int days);
 plot::Figure load_game(store::Db& db, const GameEntry& g, double hr_max);
 plot::Figure load_season(store::Db& db, double hr_max);
 plot::MonthData load_month(store::Db& db, int year, int month);
+map::Track load_track(store::Db& db, const ActivityEntry& a);
 
 // Local midnight (Unix seconds) for a YYYY-MM-DD date; 0 on bad input.
 int64_t local_midnight_of(const std::string& date);

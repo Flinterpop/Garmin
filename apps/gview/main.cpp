@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+#include "map/map_widget.h"
+#include "map/tile_cache.h"
 #include "plot/calendar_widget.h"
 #include "plot/plot_widget.h"
 #include "queries.h"
@@ -23,6 +25,8 @@
 #pragma comment(lib, "d2d1")
 #pragma comment(lib, "dwrite")
 #pragma comment(lib, "comctl32")
+#pragma comment(lib, "windowscodecs")
+#pragma comment(lib, "ole32")
 
 using Microsoft::WRL::ComPtr;
 
@@ -36,6 +40,8 @@ constexpr int kIdmViewTrends = 102;
 constexpr int kIdmViewActivity = 103;
 constexpr int kIdmViewHockey = 104;
 constexpr int kIdmViewCalendar = 105;
+constexpr int kIdmViewMap = 106;
+constexpr UINT kMsgTileReady = WM_APP + 1;
 constexpr int kIdmFit = 201;
 constexpr int kIdmZoomIn = 202;
 constexpr int kIdmZoomOut = 203;
@@ -45,7 +51,7 @@ constexpr double kWheelZoomPerNotch = 0.8;
 constexpr double kKeyZoom = 0.7;
 constexpr float kKeyPanFrac = 0.1f;
 
-enum class Mode { kDay, kTrends, kActivity, kHockey, kCalendar };
+enum class Mode { kDay, kTrends, kActivity, kHockey, kCalendar, kMap };
 
 struct App {
   HWND hwnd = nullptr;
@@ -56,6 +62,9 @@ struct App {
   ComPtr<ID2D1HwndRenderTarget> rt;
   plot::PlotWidget widget;
   plot::CalendarWidget calendar;
+  map::MapWidget mapw;
+  map::TileCache tiles;
+  ComPtr<IWICImagingFactory> wic;
   store::Db db;
   std::filesystem::path db_path;
   Mode mode = Mode::kDay;
@@ -64,11 +73,13 @@ struct App {
   std::vector<gview::TrendRange> ranges;
   std::vector<gview::GameEntry> games;
   std::vector<gview::MonthEntry> months;
+  std::vector<gview::ActivityEntry> gps_activities;
   double hockey_hr_max = 190.0;
   float scale = 1.0f;
   bool dragging = false;
   bool moved_while_dragging = false;
   int drag_last_x = 0;
+  int drag_last_y = 0;
   bool tracking_mouse = false;
 };
 
@@ -114,6 +125,7 @@ void layout(App& a) {
                                       static_cast<float>(pr.right), static_cast<float>(pr.bottom));
   a.widget.set_rect(prf);
   a.calendar.set_rect(prf);
+  a.mapw.set_rect(prf);
   if (a.rt) {
     a.rt->Resize(D2D1::SizeU(static_cast<UINT32>(rc.right - rc.left),
                              static_cast<UINT32>(rc.bottom - rc.top)));
@@ -150,6 +162,9 @@ void fill_list(App& a) {
       break;
     case Mode::kCalendar:
       for (const auto& m : a.months) add(m.label);
+      break;
+    case Mode::kMap:
+      for (const auto& e : a.gps_activities) add(e.label);
       break;
   }
   SendMessageW(a.list, WM_SETREDRAW, TRUE, 0);
@@ -192,9 +207,16 @@ void show_selection(App& a) {
           a.calendar.set_month(std::move(md));
         }
         break;
+      case Mode::kMap:
+        if (static_cast<size_t>(sel) < a.gps_activities.size()) {
+          map::Track t = gview::load_track(a.db, a.gps_activities[static_cast<size_t>(sel)]);
+          title = "Map  " + t.title;
+          a.mapw.set_track(std::move(t));
+        }
+        break;
     }
   }
-  if (a.mode != Mode::kCalendar) {
+  if (a.mode != Mode::kCalendar && a.mode != Mode::kMap) {
     title = fig.title;
     a.widget.set_figure(std::move(fig));
   }
@@ -214,6 +236,7 @@ void reload(App& a) {
   a.ranges = gview::trend_ranges();
   a.games = gview::list_games(a.db);
   a.months = gview::list_months(a.db);
+  a.gps_activities = gview::list_gps_activities(a.db);
   a.hockey_hr_max = gview::hockey_hr_max(a.db);
   fill_list(a);
   SendMessageW(a.list, LB_SETCURSEL, 0, 0);
@@ -224,7 +247,7 @@ void set_mode(App& a, Mode m) {
   a.mode = m;
   HMENU menu = GetMenu(a.hwnd);
   const int id = kIdmViewDay + static_cast<int>(m);
-  CheckMenuRadioItem(menu, kIdmViewDay, kIdmViewCalendar, id, MF_BYCOMMAND);
+  CheckMenuRadioItem(menu, kIdmViewDay, kIdmViewMap, id, MF_BYCOMMAND);
   fill_list(a);
   SendMessageW(a.list, LB_SETCURSEL, 0, 0);
   show_selection(a);
@@ -241,11 +264,16 @@ void paint(App& a) {
   a.rt->Clear(D2D1::ColorF(D2D1::ColorF::White));
   if (a.mode == Mode::kCalendar) {
     a.calendar.render(a.rt.Get());
+  } else if (a.mode == Mode::kMap) {
+    a.mapw.render(a.rt.Get());
   } else {
     a.widget.render(a.rt.Get());
   }
   const HRESULT hr = a.rt->EndDraw();
-  if (hr == D2DERR_RECREATE_TARGET) a.rt.Reset();
+  if (hr == D2DERR_RECREATE_TARGET) {
+    a.rt.Reset();
+    a.mapw.drop_bitmaps();
+  }
   EndPaint(a.hwnd, &ps);
 }
 
@@ -268,6 +296,7 @@ HMENU build_menu() {
   AppendMenuW(view, MF_STRING, kIdmViewActivity, L"&Activity\t3");
   AppendMenuW(view, MF_STRING, kIdmViewHockey, L"&Hockey\t4");
   AppendMenuW(view, MF_STRING, kIdmViewCalendar, L"&Calendar\t5");
+  AppendMenuW(view, MF_STRING, kIdmViewMap, L"&Map\t6");
   AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(view, MF_STRING, kIdmFit, L"&Fit to data\tHome");
   AppendMenuW(view, MF_STRING, kIdmZoomIn, L"Zoom &in\t+");
@@ -278,7 +307,7 @@ HMENU build_menu() {
   AppendMenuW(data, MF_STRING, kIdmExit, L"E&xit");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(view), L"&View");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(data), L"&Data");
-  CheckMenuRadioItem(bar, kIdmViewDay, kIdmViewCalendar, kIdmViewDay, MF_BYCOMMAND);
+  CheckMenuRadioItem(bar, kIdmViewDay, kIdmViewMap, kIdmViewDay, MF_BYCOMMAND);
   return bar;
 }
 
@@ -317,6 +346,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       apply_list_font(*a);
       a->widget.set_dpi_scale(a->scale);
       a->calendar.set_dpi_scale(a->scale);
+      a->mapw.set_dpi_scale(a->scale);
+      a->tiles.start(gutil::app_data_dir() / L"tiles", hwnd, kMsgTileReady);
       layout(*a);
       reload(*a);
       return 0;
@@ -328,6 +359,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       a->scale = static_cast<float>(HIWORD(wp)) / 96.0f;
       a->widget.set_dpi_scale(a->scale);
       a->calendar.set_dpi_scale(a->scale);
+      a->mapw.set_dpi_scale(a->scale);
       apply_list_font(*a);
       const RECT* r = reinterpret_cast<const RECT*>(lp);
       SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
@@ -352,6 +384,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case kIdmViewActivity: set_mode(*a, Mode::kActivity); break;
         case kIdmViewHockey: set_mode(*a, Mode::kHockey); break;
         case kIdmViewCalendar: set_mode(*a, Mode::kCalendar); break;
+        case kIdmViewMap: set_mode(*a, Mode::kMap); break;
         case kIdmFit: a->widget.fit_x(); InvalidateRect(hwnd, nullptr, FALSE); break;
         case kIdmZoomIn:
         case kIdmZoomOut: {
@@ -372,6 +405,11 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       ScreenToClient(hwnd, &pt);
       if (!in_plot(*a, pt.x, pt.y) || a->mode == Mode::kCalendar) break;
       const int notches = GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
+      if (a->mode == Mode::kMap) {
+        a->mapw.zoom_step(static_cast<float>(pt.x), static_cast<float>(pt.y), notches > 0 ? 1 : -1);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+      }
       double factor = 1.0;
       for (int i = 0; i < 10 && i < (notches < 0 ? -notches : notches); ++i) {
         factor *= notches > 0 ? kWheelZoomPerNotch : 1.0 / kWheelZoomPerNotch;
@@ -387,6 +425,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       a->dragging = true;
       a->moved_while_dragging = false;
       a->drag_last_x = x;
+      a->drag_last_y = y;
       SetCapture(hwnd);
       SetFocus(hwnd);
       return 0;
@@ -401,14 +440,21 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       }
       if (a->dragging) {
         const int dx = x - a->drag_last_x;
-        if (dx != 0) {
-          a->widget.pan_pixels(static_cast<float>(dx));
+        const int dy = y - a->drag_last_y;
+        if (dx != 0 || dy != 0) {
+          if (a->mode == Mode::kMap) {
+            a->mapw.pan_pixels(static_cast<float>(dx), static_cast<float>(dy));
+          } else if (dx != 0) {
+            a->widget.pan_pixels(static_cast<float>(dx));
+          }
           a->drag_last_x = x;
+          a->drag_last_y = y;
           a->moved_while_dragging = true;
         }
       }
       a->widget.set_hover(static_cast<float>(x), static_cast<float>(y), in_plot(*a, x, y));
       a->calendar.set_hover(static_cast<float>(x), static_cast<float>(y), in_plot(*a, x, y));
+      a->mapw.set_hover(static_cast<float>(x), static_cast<float>(y), in_plot(*a, x, y));
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     }
@@ -422,13 +468,20 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       a->tracking_mouse = false;
       a->widget.set_hover(0.0f, 0.0f, false);
       a->calendar.set_hover(0.0f, 0.0f, false);
+      a->mapw.set_hover(0.0f, 0.0f, false);
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     case WM_KEYDOWN: {
       const RECT r = plot_rect(*a);
       const float w = static_cast<float>(r.right - r.left);
       switch (wp) {
-        case VK_HOME: a->widget.fit_x(); break;
+        case VK_HOME:
+          if (a->mode == Mode::kMap) {
+            a->mapw.fit();
+          } else {
+            a->widget.fit_x();
+          }
+          break;
         case VK_LEFT: a->widget.pan_pixels(w * kKeyPanFrac); break;
         case VK_RIGHT: a->widget.pan_pixels(-w * kKeyPanFrac); break;
         case VK_UP:
@@ -449,12 +502,17 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case '3': set_mode(*a, Mode::kActivity); return 0;
         case '4': set_mode(*a, Mode::kHockey); return 0;
         case '5': set_mode(*a, Mode::kCalendar); return 0;
+        case '6': set_mode(*a, Mode::kMap); return 0;
         default: return DefWindowProcW(hwnd, msg, wp, lp);
       }
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     }
+    case kMsgTileReady:
+      if (a->mode == Mode::kMap) InvalidateRect(hwnd, nullptr, FALSE);
+      return 0;
     case WM_DESTROY:
+      a->tiles.stop();
       PostQuitMessage(0);
       return 0;
     default:
@@ -484,6 +542,7 @@ std::filesystem::path resolve_db_path() {
 
 int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+  if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 2;
   auto app = std::make_unique<App>();
   g_app = app.get();
   app->db_path = resolve_db_path();
@@ -504,6 +563,11 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show) {
   }
   if (!app->widget.init(app->d2d.Get(), app->dwrite.Get())) return 2;
   if (!app->calendar.init(app->d2d.Get(), app->dwrite.Get())) return 2;
+  if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                              IID_PPV_ARGS(&app->wic)))) {
+    return 2;
+  }
+  if (!app->mapw.init(app->d2d.Get(), app->dwrite.Get(), app->wic.Get(), &app->tiles)) return 2;
 
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);
@@ -530,5 +594,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show) {
   }
   if (app->list_font != nullptr) DeleteObject(app->list_font);
   g_app = nullptr;
+  app.reset();
+  CoUninitialize();
   return static_cast<int>(msg.wParam);
 }

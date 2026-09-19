@@ -8,7 +8,7 @@ Three executables:
 
 - **`gsync`** — signs in to Garmin Connect the way the mobile app does, pulls daily summaries, heart rate, sleep, stress / Body Battery, HRV, body composition (the Index scale), the activity list, per-activity FIT files and the daily wellness (monitoring) FIT files, and imports it all into `garmin.db`. Also imports FIT files copied straight off a watch over USB.
 - **`fitdump`** — inspects a single FIT file: summary, per-message counts, session line, and optional full dump to stdout or a long-format CSV.
-- **`gview`** — Win32 + Direct2D viewer over `garmin.db` with five views: **Day** (heart rate, stress, Body Battery, sleep stages, respiration, HRV on one time axis), **Trends** (resting HR, HRV, sleep hours and score, weight in lb, steps over 30 days to everything), **Activity** (HR, speed, altitude, cadence, power, temperature against elapsed time, laps as markers), **Hockey** (per-game shift detection from the HR trace with on-ice bands, HR zones, shift lengths and peak HR, plus a season overview across every game) and **Calendar** (month grid with steps, resting HR, Body Battery range, sleep score and the day's activities). Wheel zooms, drag pans, hover shows every value at the cursor.
+- **`gview`** — Win32 + Direct2D viewer over `garmin.db` with five views: **Day** (heart rate, stress, Body Battery, sleep stages, respiration, HRV on one time axis), **Trends** (resting HR, HRV, sleep hours and score, weight in lb, steps over 30 days to everything), **Activity** (HR, speed, altitude, cadence, power, temperature against elapsed time, laps as markers), **Hockey** (per-game shift detection from the HR trace with on-ice bands, HR zones, shift lengths and peak HR, plus a season overview across every game) **Calendar** (month grid with steps, resting HR, Body Battery range, sleep score and the day's activities) and **Map** (GPS activities on OpenStreetMap tiles, track coloured by heart rate, start/finish/lap markers, scale bar, hover readout of time, distance, HR, pace and altitude). Wheel zooms, drag pans, hover shows every value at the cursor.
 
 ## Status
 
@@ -19,11 +19,13 @@ Three executables:
 | SQLite store + importers (`src/store`) | Done; verified on live JSON and on 208 files copied off a fenix 7 |
 | Plot viewer (`src/plot`, `apps/gview`) | Done; own Direct2D plot engine, five views, verified on the live database |
 | Hockey analysis (`src/analysis`) | Done; shift detection tuned on real games |
+| Map (`src/map`) | Done; OSM tiles + HR-coloured tracks, verified on runs and ski days |
 
 Notes:
 
 - The Connect API is Garmin's unofficial app API (the same one `garth` / `python-garminconnect` use). Garmin can change it without notice; when that happens `gsync get <path>` is the debugging tool. The wellness-zip endpoint answers Cloudflare 504 for older dates fairly often; `gsync` retries 5xx with backoff and leaves failed days unmarked so the next sync picks them up.
 - Weight is stored in kg and displayed in pounds.
+- The Map view fetches tiles from `tile.openstreetmap.org` (the only traffic that does not go to Garmin), with an identifying User-Agent and an on-disk cache in `%LOCALAPPDATA%\GarminSync	iles`, as the OSM tile usage policy asks. Only tiles currently on screen are requested.
 - The OAuth consumer key pair is fetched from the public location `garth` publishes, or can be supplied via `GARMIN_OAUTH_CONSUMER_KEY` / `GARMIN_OAUTH_CONSUMER_SECRET`.
 
 ## Build
@@ -56,7 +58,7 @@ fitdump some.fit --csv out.csv  # mesg,timestamp,field,value,units
 gview                           # opens the default database; --data <dir> for another
 ```
 
-`gview` keys: `1` – `5` switch Day / Trends / Activity / Hockey / Calendar, `Up` / `Down` step through the list, mouse wheel zooms around the cursor, drag pans, `Home` fits, `+` / `-` zoom, `F5` reloads after a sync.
+`gview` keys: `1` – `6` switch Day / Trends / Activity / Hockey / Calendar / Map, `Up` / `Down` step through the list, mouse wheel zooms around the cursor, drag pans, `Home` fits, `+` / `-` zoom, `F5` reloads after a sync.
 
 Hockey shifts are detected from the smoothed HR trace: each rising leg (with 12 bpm hysteresis) whose peak clears the game's median HR is a shift, since HR climbs on the ice and falls on the bench. Zones are 60/70/80/90 % of a robust HR max (95th percentile of per-game maxima). Both live in `src/analysis/hockey.cpp` and are unit-tested on a synthetic game.
 
@@ -120,6 +122,7 @@ src/gc      http_client (WinHTTP), oauth1 (RFC 5849 signing), token_store (DPAPI
 src/store   db (SQLite wrapper + schema), importer (JSON and FIT -> rows)
 src/plot    plot_types (Figure/Panel/Series model), ticks (nice numbers, local-time and elapsed axes), decimate (min/max per pixel column), plot_widget (Direct2D rendering, zoom/pan/hover), calendar_widget (month grid)
 src/analysis hockey (shift detection, HR zones, per-game stats)
+src/map     mercator (Web Mercator + tile maths), tile_cache (OSM download thread + disk cache), map_widget (Direct2D map)
 apps        fitdump, gsync, gview (Win32 window; queries*.cpp build Figures / MonthData from garmin.db)
 tests       Catch2: CRC, decoder (synthetic FIT files), OAuth1 (RFC test vectors), zip, time
 ```
@@ -131,6 +134,6 @@ The FIT decoder is written from the protocol specification rather than wrapping 
 ## Next steps
 
 1. Backfill: `gsync sync --from 2022-12-01 --activities 500`.
-2. Viewer: activity map from the GPS records, comparing two activities or games, exporting a panel to PNG, a nightly scheduled `gsync sync --days 3`.
+2. Viewer: comparing two activities or games, exporting a panel to PNG, a nightly scheduled `gsync sync --days 3`.
 3. Read the watch over MTP from `gsync` directly (Windows Portable Devices API) instead of the PowerShell copy step.
 4. Live chest-strap HR over BLE (WinRT `GattCharacteristic`), writing to `hr_sample` with `source='ble'`.

@@ -51,7 +51,8 @@ void usage_text() {
       "  --activities <n>      max activities to list (default 50)\n"
       "  --no-fit              skip FIT downloads\n"
       "  --force               re-fetch / re-import even if already done\n"
-      "  --out <file>          write `get` output to a file\n",
+      "  --out <file>          write `get` output to a file\n"
+      "  --log <file>          append all output to a log file (for scheduled runs)\n",
       stderr);
 }
 
@@ -382,6 +383,8 @@ bool parse(int argc, char** argv, Options& o, std::string& err) {
       }
     } else if (a == "--out" && has_next) {
       o.out_file = argv[++i];
+    } else if (a == "--log" && has_next) {
+      o.log_file = argv[++i];
     } else if (a == "--no-fit") {
       o.no_fit = true;
     } else if (a == "--force") {

@@ -16,6 +16,7 @@ struct Options {
   bool no_fit = false;              // --no-fit
   bool force = false;               // --force
   std::string out_file;             // --out (for `get`)
+  std::string log_file;             // --log: append all output to this file
 };
 
 bool parse(int argc, char** argv, Options& o, std::string& err);

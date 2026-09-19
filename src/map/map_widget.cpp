@@ -256,6 +256,8 @@ ID2D1Bitmap* MapWidget::tile_bitmap(ID2D1RenderTarget* rt, const TileKey& key) {
 }
 
 void MapWidget::draw_tiles(ID2D1RenderTarget* rt) {
+  G_ASSERT(rt != nullptr && tiles_ != nullptr);
+  G_ASSERT(zoom_ >= kMinZoom && zoom_ <= kMaxZoom);
   tiles_->clear_queue();
   const int n = tiles_at(zoom_);
   const double wp = world_px();
@@ -470,6 +472,8 @@ size_t MapWidget::nearest_point(float px, float py, float max_dist_px) const {
 }
 
 void MapWidget::draw_hover(ID2D1RenderTarget* rt) {
+  G_ASSERT(rt != nullptr && hover_);
+  G_ASSERT(world_.size() == track_.points.size());
   const size_t i = nearest_point(hover_px_, hover_py_, s(kHoverPickPx));
   if (i == SIZE_MAX) return;
   const TrackPoint& p = track_.points[i];

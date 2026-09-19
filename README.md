@@ -2,7 +2,7 @@
 
 [![Release][release-badge]][release-latest] [![License: MIT][license-badge]](LICENSE)
 
-[release-badge]: https://img.shields.io/badge/release-v0.1.0-blue
+[release-badge]: https://img.shields.io/badge/release-v0.1.1-blue
 [release-latest]: https://github.com/Flinterpop/Garmin/releases/latest
 [license-badge]: https://img.shields.io/badge/license-MIT-green
 
@@ -29,6 +29,7 @@ Three executables:
 | Hockey analysis (`src/analysis`) | Done; shift detection tuned on real games |
 | Map (`src/map`) | Done; OSM tiles + HR-coloured tracks, verified on runs and ski days |
 | Ski analysis, Compare, Sleep, baselines, blood pressure | Done |
+| Nightly sync task, app icon, MIT license, public releases | Done |
 
 Notes:
 
@@ -140,6 +141,10 @@ All timestamps are Unix seconds (UTC). `source` distinguishes `api` (Garmin Conn
 | `fit_file` | file | provenance: path, type, device, time created |
 | `sync_log` | kind × day | which days are already fetched (today is always refetched) |
 
+## Code health
+
+The code follows NASA/JPL's Power of 10 as far as a desktop app sensibly can: every loop over data has a fixed upper bound, no recursion, assertions on preconditions (`G_ASSERT` stays on in Release), every return value checked, no function longer than a screen, single-level pointer indirection, `/W4 /WX`. `python tools/rot_scan.py` reports long functions, assertion-free functions, unbounded loops, TODO markers, dead declarations and dropped return values; it is run before each release and its output should stay empty apart from a handful of dispatch tables. The dependency set is four vcpkg ports (nlohmann-json, zlib, sqlite3, Catch2) plus the Windows SDK, so there is little to age.
+
 ## Code map
 
 ```text
@@ -162,7 +167,7 @@ The FIT decoder is written from the protocol specification rather than wrapping 
 
 ## Next steps
 
-1. Live chest-strap HR over BLE (WinRT GATT heart-rate service) for treadmill and trainer sessions.
+1. Live chest-strap HR over BLE (WinRT GATT heart-rate service) for treadmill and Wahoo KICKR sessions — next up.
 2. Export the current view to PNG; auto-reload when the database changes.
 3. Read the watch over MTP from `gsync` directly (Windows Portable Devices API) instead of the PowerShell copy step.
 4. Backfill the years before 2024 (`gsync sync --from 2022-12-01`).

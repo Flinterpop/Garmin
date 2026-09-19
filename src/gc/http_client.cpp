@@ -102,14 +102,23 @@ HttpClient::HttpClient(const std::wstring& user_agent) : user_agent_(user_agent)
     last_error_ = win_error("WinHttpOpen", GetLastError());
     return;
   }
-  WinHttpSetTimeouts(session_, kTimeoutMs, kTimeoutMs, kTimeoutMs, kTimeoutMs);
+  if (!WinHttpSetTimeouts(session_, kTimeoutMs, kTimeoutMs, kTimeoutMs, kTimeoutMs)) {
+    last_error_ = win_error("WinHttpSetTimeouts", GetLastError());
+  }
+  // Transparent gzip/deflate; without it Garmin's JSON would arrive compressed.
   DWORD decomp = WINHTTP_DECOMPRESSION_FLAG_ALL;
-  WinHttpSetOption(session_, WINHTTP_OPTION_DECOMPRESSION, &decomp, sizeof(decomp));
+  if (!WinHttpSetOption(session_, WINHTTP_OPTION_DECOMPRESSION, &decomp, sizeof(decomp))) {
+    last_error_ = win_error("WinHttpSetOption(decompression)", GetLastError());
+  }
+  // TLS 1.3 is unknown to older Windows 10 builds; fall back to 1.2 alone.
   DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
   if (!WinHttpSetOption(session_, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols,
                         sizeof(protocols))) {
     protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
-    WinHttpSetOption(session_, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols));
+    if (!WinHttpSetOption(session_, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols,
+                          sizeof(protocols))) {
+      last_error_ = win_error("WinHttpSetOption(secure protocols)", GetLastError());
+    }
   }
 }
 

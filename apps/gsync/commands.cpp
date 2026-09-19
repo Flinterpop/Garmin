@@ -249,6 +249,8 @@ void sync_weight(SyncContext& cx, const std::string& from, const std::string& to
 }
 
 void sync_activities(SyncContext& cx, int64_t from_ts) {
+  G_ASSERT(from_ts > 0);
+  G_ASSERT(cx.opt.max_activities >= 0);
   const int max_items = std::min(cx.opt.max_activities, kMaxActivities);
   std::vector<int64_t> ids;
   bool more = true;
@@ -391,6 +393,7 @@ int import_one_path(store::Db& db, const std::filesystem::path& p, bool force, i
 void usage() { usage_text(); }
 
 bool parse(int argc, char** argv, Options& o, std::string& err) {
+  G_ASSERT(argv != nullptr);
   if (argc < 2) return false;
   o.command = argv[1];
   for (int i = 2; i < argc; ++i) {
@@ -549,6 +552,7 @@ int run_import(const Options& o) {
 }
 
 int run_get(const Options& o) {
+  G_ASSERT(o.command == "get");
   if (o.args.size() != 1 || o.args[0].empty() || o.args[0][0] != '/') {
     std::fprintf(stderr, "error: get needs an API path starting with '/'\n");
     return 2;

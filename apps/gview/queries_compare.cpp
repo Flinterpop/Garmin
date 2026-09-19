@@ -81,6 +81,8 @@ std::string summary(const char* tag, const ActivityEntry& e, const Traces& t) {
 }  // namespace
 
 Figure load_compare(store::Db& db, const ActivityEntry& a, const ActivityEntry& b) {
+  G_ASSERT(db.is_open());
+  G_ASSERT(a.fit_file_id > 0 && b.fit_file_id > 0);
   Figure fig;
   fig.xmode = plot::XMode::kElapsed;
   const plot::Color ca = plot::rgb(0xD62728);

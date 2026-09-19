@@ -98,8 +98,10 @@ void TileCache::clear_queue() {
 
 void TileCache::worker_main() {
   gc::HttpClient http(kUserAgent);
-  // Bounded by stop_: each iteration handles one tile or waits.
-  for (;;) {
+  G_ASSERT(http.ok());
+  // Each iteration handles one tile or waits; stop_ ends the loop, the
+  // iteration cap keeps it formally bounded.
+  for (uint64_t iteration = 0; iteration < kMaxWorkerIterations; ++iteration) {
     TileKey key;
     {
       std::unique_lock<std::mutex> lock(mu_);

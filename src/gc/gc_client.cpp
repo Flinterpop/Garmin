@@ -63,6 +63,7 @@ GarminClient::~GarminClient() = default;
 // ------------------------------------------------------------------ login
 
 bool GarminClient::fetch_consumer(OAuthConsumer& out, std::string& err) {
+  G_ASSERT(http_ != nullptr);
   if (have_consumer_) {
     out = consumer_;
     return true;
@@ -369,13 +370,6 @@ bool GarminClient::daily_stress(const std::string& date, json& out, std::string&
 
 bool GarminClient::daily_hrv(const std::string& date, json& out, std::string& err) {
   return get_json("/hrv-service/hrv/" + date, out, err);
-}
-
-bool GarminClient::body_battery(const std::string& start, const std::string& end, json& out,
-                                std::string& err) {
-  return get_json("/wellness-service/wellness/bodyBattery/reports/daily?startDate=" + start +
-                      "&endDate=" + end,
-                  out, err);
 }
 
 bool GarminClient::weight_range(const std::string& start, const std::string& end, json& out,

@@ -44,12 +44,4 @@ bool Figure::finalize() {
   return true;
 }
 
-size_t Figure::point_count() const {
-  size_t n = 0;
-  for (const Panel& p : panels) {
-    for (const Series& s : p.series) n += s.x.size();
-  }
-  return n;
-}
-
 }  // namespace plot

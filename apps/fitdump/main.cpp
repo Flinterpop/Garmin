@@ -66,6 +66,8 @@ std::string field_label(const fit::Message& m, const fit::FieldValue& f) {
 }
 
 std::string format_value(const fit::Message& m, const fit::FieldValue& f, std::string& units) {
+  G_ASSERT(f.raw != nullptr);
+  G_ASSERT(f.valid);
   units.clear();
   const bool is_string = (f.base_type & fit::kBaseTypeIndexMask) ==
                          (fit::kString & fit::kBaseTypeIndexMask);
@@ -143,93 +145,60 @@ void note_session(const fit::Message& m, Summary& s) {
   s.sessions.push_back(line);
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
-  Options opt;
-  if (!parse_args(argc, argv, opt)) {
-    usage();
-    return 2;
+// Folds one message into the summary counters.
+void summarize(const fit::Message& m, Summary& sum) {
+  ++sum.counts[m.global_num];
+  if (m.has_timestamp) {
+    if (sum.first_ts == 0) sum.first_ts = m.timestamp;
+    sum.last_ts = m.timestamp;
   }
-  std::vector<uint8_t> bytes;
-  if (!gutil::read_file(opt.input, bytes)) {
-    std::fprintf(stderr, "cannot read %s\n", opt.input.c_str());
-    return 1;
+  if (m.global_num == fit::kMesgFileId) {
+    int64_t type = 0;
+    if (m.get_int(0, type)) sum.file_type = fit::file_type_name(static_cast<uint8_t>(type));
+    int64_t created = 0;
+    if (m.get_int(4, created)) {
+      sum.created = gutil::iso8601_utc(gutil::fit_to_unix(static_cast<uint32_t>(created)));
+    }
+    const fit::FieldValue* name = m.find(8);
+    if (name != nullptr && name->valid) sum.product = std::string(name->as_string());
   }
-
-  FILE* csv = nullptr;
-  if (!opt.csv_out.empty()) {
-    csv = std::fopen(opt.csv_out.c_str(), "w");
-    if (csv == nullptr) {
-      std::fprintf(stderr, "cannot write %s\n", opt.csv_out.c_str());
-      return 1;
-    }
-    std::fputs("mesg,timestamp,field,value,units\n", csv);
+  if (m.global_num == fit::kMesgDeviceInfo && sum.product.empty()) {
+    const fit::FieldValue* name = m.find(27);
+    if (name != nullptr && name->valid) sum.product = std::string(name->as_string());
   }
+  if (m.global_num == fit::kMesgSession) note_session(m, sum);
+  if (m.global_num == fit::kMesgRecord) ++sum.records;
+}
 
-  Summary sum;
-  size_t printed = 0;
-  auto decoder = std::make_unique<fit::Decoder>();
-  const auto on_message = [&](const fit::Message& m) {
-    ++sum.counts[m.global_num];
-    const fit::MesgInfo* mi = fit::find_mesg(m.global_num);
-    const std::string mesg_name =
-        mi != nullptr ? mi->name : "mesg_" + std::to_string(m.global_num);
-    if (m.has_timestamp) {
-      if (sum.first_ts == 0) sum.first_ts = m.timestamp;
-      sum.last_ts = m.timestamp;
+// Writes one message to stdout and/or the CSV, field by field.
+void emit(const fit::Message& m, const std::string& mesg_name, const Options& opt, FILE* csv) {
+  G_ASSERT(opt.print_messages || csv != nullptr);
+  const std::string ts =
+      m.has_timestamp ? gutil::iso8601_utc(gutil::fit_to_unix(m.timestamp)) : std::string();
+  if (opt.print_messages) std::printf("%s [%s]", mesg_name.c_str(), ts.c_str());
+  for (uint16_t i = 0; i < m.num_fields; ++i) {
+    const fit::FieldValue& f = m.fields[i];
+    if (!f.valid) continue;
+    const bool known = f.developer || fit::find_field(m.global_num, f.num) != nullptr;
+    if (!known && !opt.include_unknown) continue;
+    std::string units;
+    const std::string label = field_label(m, f);
+    const std::string value = format_value(m, f, units);
+    if (opt.print_messages) {
+      std::printf(" %s=%s%s%s", label.c_str(), value.c_str(), units.empty() ? "" : " ",
+                  units.c_str());
     }
-    if (m.global_num == fit::kMesgFileId) {
-      int64_t type = 0;
-      if (m.get_int(0, type)) sum.file_type = fit::file_type_name(static_cast<uint8_t>(type));
-      int64_t created = 0;
-      if (m.get_int(4, created)) {
-        sum.created = gutil::iso8601_utc(gutil::fit_to_unix(static_cast<uint32_t>(created)));
-      }
-      const fit::FieldValue* name = m.find(8);
-      if (name != nullptr && name->valid) sum.product = std::string(name->as_string());
+    if (csv != nullptr) {
+      std::fprintf(csv, "%s,%s,%s,%s,%s\n", mesg_name.c_str(), ts.c_str(), label.c_str(),
+                   csv_escape(value).c_str(), units.c_str());
     }
-    if (m.global_num == fit::kMesgDeviceInfo && sum.product.empty()) {
-      const fit::FieldValue* name = m.find(27);
-      if (name != nullptr && name->valid) sum.product = std::string(name->as_string());
-    }
-    if (m.global_num == fit::kMesgSession) note_session(m, sum);
-    if (m.global_num == fit::kMesgRecord) ++sum.records;
+  }
+  if (opt.print_messages) std::printf("\n");
+}
 
-    const bool wanted = (mi != nullptr) || opt.include_unknown;
-    if (!wanted || (csv == nullptr && !opt.print_messages)) return;
-    if (printed >= kMaxPrintedMessages) return;
-    ++printed;
-
-    const std::string ts =
-        m.has_timestamp ? gutil::iso8601_utc(gutil::fit_to_unix(m.timestamp)) : std::string();
-    if (opt.print_messages) std::printf("%s [%s]", mesg_name.c_str(), ts.c_str());
-    for (uint16_t i = 0; i < m.num_fields; ++i) {
-      const fit::FieldValue& f = m.fields[i];
-      if (!f.valid) continue;
-      const bool known = f.developer || fit::find_field(m.global_num, f.num) != nullptr;
-      if (!known && !opt.include_unknown) continue;
-      std::string units;
-      const std::string label = field_label(m, f);
-      const std::string value = format_value(m, f, units);
-      if (opt.print_messages) {
-        std::printf(" %s=%s%s%s", label.c_str(), value.c_str(), units.empty() ? "" : " ",
-                    units.c_str());
-      }
-      if (csv != nullptr) {
-        std::fprintf(csv, "%s,%s,%s,%s,%s\n", mesg_name.c_str(), ts.c_str(), label.c_str(),
-                     csv_escape(value).c_str(), units.c_str());
-      }
-    }
-    if (opt.print_messages) std::printf("\n");
-  };
-
-  std::string err;
-  const bool ok = decoder->decode(bytes.data(), bytes.size(), on_message, err);
-  if (csv != nullptr) std::fclose(csv);
-
-  const fit::DecodeStats& st = decoder->stats();
-  std::printf("file:      %s (%zu bytes)\n", opt.input.c_str(), bytes.size());
+void print_summary(const Options& opt, size_t bytes, const fit::DecodeStats& st,
+                   const Summary& sum) {
+  std::printf("file:      %s (%zu bytes)\n", opt.input.c_str(), bytes);
   std::printf("protocol:  %u.%u  profile: %u.%02u  files: %zu  crc: %s\n",
               st.protocol_version >> 4, st.protocol_version & 0x0F, st.profile_version / 100,
               st.profile_version % 100, st.files, st.crc_ok ? "ok" : "MISMATCH");
@@ -249,6 +218,48 @@ int main(int argc, char** argv) {
     std::printf("  %-24s %8zu\n", name.c_str(), count);
   }
   for (const std::string& s : sum.sessions) std::printf("%s\n", s.c_str());
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  Options opt;
+  if (!parse_args(argc, argv, opt)) {
+    usage();
+    return 2;
+  }
+  std::vector<uint8_t> bytes;
+  if (!gutil::read_file(opt.input, bytes)) {
+    std::fprintf(stderr, "cannot read %s\n", opt.input.c_str());
+    return 1;
+  }
+  FILE* csv = nullptr;
+  if (!opt.csv_out.empty()) {
+    csv = std::fopen(opt.csv_out.c_str(), "w");
+    if (csv == nullptr) {
+      std::fprintf(stderr, "cannot write %s\n", opt.csv_out.c_str());
+      return 1;
+    }
+    std::fputs("mesg,timestamp,field,value,units\n", csv);
+  }
+
+  Summary sum;
+  size_t printed = 0;
+  auto decoder = std::make_unique<fit::Decoder>();
+  const auto on_message = [&](const fit::Message& m) {
+    summarize(m, sum);
+    const fit::MesgInfo* mi = fit::find_mesg(m.global_num);
+    const bool wanted = (mi != nullptr) || opt.include_unknown;
+    if (!wanted || (csv == nullptr && !opt.print_messages) || printed >= kMaxPrintedMessages) return;
+    ++printed;
+    emit(m, mi != nullptr ? mi->name : "mesg_" + std::to_string(m.global_num), opt, csv);
+  };
+  std::string err;
+  const bool ok = decoder->decode(bytes.data(), bytes.size(), on_message, err);
+  if (csv != nullptr && std::fclose(csv) != 0) {
+    std::fprintf(stderr, "warning: error closing %s\n", opt.csv_out.c_str());
+  }
+  print_summary(opt, bytes.size(), decoder->stats(), sum);
   if (!ok) {
     std::fprintf(stderr, "error: %s\n", err.c_str());
     return 1;

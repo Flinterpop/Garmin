@@ -29,7 +29,8 @@ ctest --preset debug                # Catch2, must stay at 100 %
 - New view = a `queries_<name>.cpp` returning a `Figure`, a `Mode` in `apps/gview/main.cpp`, a list function, a menu item and a digit key. Follow `queries_ski.cpp` as the template.
 - Timestamps are Unix seconds UTC in the database; display converts to local. Weight is stored in kg and shown in lb.
 - Session lists must de-duplicate by `start_ts` and prefer the copy with records (the watch's `SUMMARY` folder holds record-less twins).
-- Version lives in three places and moves together: `project(Garmin VERSION ...)`, `apps/resource.h`, the README badge.
+- Version lives in three places and moves together: `project(Garmin VERSION ...)`, `apps/resource.h`, the README badge. Release = bump, build Release, `ctest`, `python tools/rot_scan.py`, zip the three exes + README + LICENSE, tag `vX.Y.Z`, `gh release create` with notes.
+- Before a release run `python tools/rot_scan.py`; the only acceptable residue is dispatch-style functions (`on_command`, `on_key_down`, `sport_name`) in the assertion-free list. Anything else gets fixed, not waived.
 
 ## Verifying GUI changes
 

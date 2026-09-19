@@ -32,6 +32,7 @@ struct TileKey {
 constexpr size_t kMaxMemoryTiles = 1024;   // encoded PNGs, ~20 KB each
 constexpr size_t kMaxQueue = 128;
 constexpr int64_t kFailureRetrySeconds = 120;
+constexpr uint64_t kMaxWorkerIterations = 1ull << 40;  // effectively unbounded, but bounded
 
 class TileCache {
  public:

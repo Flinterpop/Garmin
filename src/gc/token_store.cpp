@@ -21,6 +21,7 @@ std::filesystem::path default_token_path() {
 }
 
 bool load_tokens(const std::filesystem::path& p, Tokens& out, std::string& err) {
+  G_ASSERT(!p.empty());
   std::vector<uint8_t> blob;
   if (!gutil::read_file(p, blob)) {
     err = "no saved login (" + p.string() + ")";

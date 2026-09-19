@@ -31,7 +31,6 @@ const FieldInfo* find_field(uint16_t mesg_num, uint8_t field_num);
 // Human-readable names for a few enums we display.
 const char* file_type_name(uint8_t type);
 const char* sport_name(uint8_t sport);
-const char* sleep_level_name(uint8_t level);
 
 // Semicircles -> degrees.
 double semicircles_to_degrees(int32_t semicircles);

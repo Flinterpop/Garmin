@@ -9,6 +9,7 @@
 #include "fit/fit_decoder.h"
 #include "fit/fit_profile.h"
 #include "util/assert.h"
+#include "util/file_util.h"
 #include "util/time_util.h"
 
 namespace store {
@@ -250,21 +251,6 @@ bool import_stress(Db& db, const json& j, ImportCounts& c, std::string& err) {
   return ok && txn.commit(err);
 }
 
-bool import_body_battery(Db& db, const json& j, ImportCounts& c, std::string& err) {
-  // Accepts the dailyStress object or the bodyBattery/reports/daily array.
-  Txn txn(db);
-  if (!txn.begin(err)) return false;
-  if (j.is_object()) {
-    if (!body_battery_values(db, j, c, err)) return false;
-  } else if (j.is_array()) {
-    const size_t n = std::min(j.size(), kMaxJsonArray);
-    for (size_t i = 0; i < n; ++i) {
-      if (!body_battery_values(db, j[i], c, err)) return false;
-    }
-  }
-  return txn.commit(err);
-}
-
 bool import_hrv(Db& db, const std::string& date, const json& j, ImportCounts& c,
                 std::string& err) {
   if (!j.is_object() || !j.contains("hrvSummary")) return true;
@@ -344,6 +330,7 @@ bool weight_row(Stmt& s, const json& e, ImportCounts& c, std::string& err) {
 }  // namespace
 
 bool import_weight(Db& db, const json& j, ImportCounts& c, std::string& err) {
+  G_ASSERT(db.is_open());
   // weight/dateRange returns {"dateWeightList": [measurement, ...]}; older
   // shapes nest them as dailyWeightSummaries[].allWeightMetrics[]. Accept both.
   if (!j.is_object()) return true;
@@ -379,6 +366,7 @@ bool import_weight(Db& db, const json& j, ImportCounts& c, std::string& err) {
 }
 
 bool import_activity_list(Db& db, const json& j, ImportCounts& c, std::string& err) {
+  G_ASSERT(db.is_open());
   if (!j.is_array()) return true;
   Txn txn(db);
   if (!txn.begin(err)) return false;
@@ -797,7 +785,9 @@ int64_t to_int(const std::string& s) { return std::atoll(s.c_str()); }
 }  // namespace
 
 bool import_bp_csv(Db& db, const std::string& csv_text, ImportCounts& c, std::string& err) {
+  G_ASSERT(db.is_open());
   constexpr size_t kMaxLines = 200000;
+  G_REQUIRE_RET(csv_text.size() <= gutil::kMaxFileBytes, false);
   Txn txn(db);
   if (!txn.begin(err)) return false;
   Stmt s(db,

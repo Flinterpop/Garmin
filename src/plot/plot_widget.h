@@ -49,7 +49,6 @@ class PlotWidget {
   void zoom_at(float px, double factor);
   void pan_pixels(float dx);
   void fit_x();
-  void set_x_range(double x0, double x1);
   double x0() const { return x0_; }
   double x1() const { return x1_; }
 
@@ -67,6 +66,13 @@ class PlotWidget {
   void draw_panel(ID2D1RenderTarget* rt, const Panel& panel, const PanelLayout& L,
                   bool bottom);
   void draw_series(ID2D1RenderTarget* rt, const Series& s, const PanelLayout& L);
+  void draw_band(ID2D1RenderTarget* rt, const Series& s, const D2D1_RECT_F& plot);
+  void draw_range(ID2D1RenderTarget* rt, const Series& s, double lo, double hi,
+                  const D2D1_RECT_F& plot);
+  void draw_bars(ID2D1RenderTarget* rt, const Series& s, double lo, double hi,
+                 const D2D1_RECT_F& plot);
+  void draw_path(ID2D1RenderTarget* rt, const Series& s, double lo, double hi,
+                 const D2D1_RECT_F& plot);
   void draw_x_axis(ID2D1RenderTarget* rt, const PanelLayout& L);
   void draw_markers(ID2D1RenderTarget* rt);
   void draw_hover(ID2D1RenderTarget* rt);

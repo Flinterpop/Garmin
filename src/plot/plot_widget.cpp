@@ -31,6 +31,7 @@ constexpr int kYTicksTarget = 5;
 constexpr double kMinSpanSeconds = 30.0;
 constexpr double kHoverToleranceFrac = 0.02;
 constexpr size_t kMaxHoverEntries = 32;
+constexpr size_t kMaxPointMarkers = 4000;  // beyond this the line alone is drawn
 
 constexpr Color kBackground = rgb(0xFFFFFF);
 constexpr Color kPlotBorder = rgb(0xB0B0B0);
@@ -98,12 +99,6 @@ void PlotWidget::fit_x() {
   x0_ = fig_.x_min;
   x1_ = fig_.x_max;
   if (x1_ - x0_ < kMinSpanSeconds) x1_ = x0_ + kMinSpanSeconds;
-}
-
-void PlotWidget::set_x_range(double x0, double x1) {
-  G_REQUIRE_VOID(x1 > x0);
-  x0_ = x0;
-  x1_ = x1;
 }
 
 double PlotWidget::px_to_x(float px) const {
@@ -174,11 +169,14 @@ void PlotWidget::compute_layout() {
   }
 }
 
-void PlotWidget::auto_range(const Panel& panel, PanelLayout& L) const {
-  bool any_l = false;
-  bool any_r = false;
-  double lo_l = 0.0, hi_l = 0.0, lo_r = 0.0, hi_r = 0.0;
-  auto grow = [](bool& any, double& lo, double& hi, double v) {
+namespace {
+
+// Running min/max of the values seen so far on one axis.
+struct Extent {
+  bool any = false;
+  double lo = 0.0;
+  double hi = 0.0;
+  void grow(double v) {
     if (!any) {
       lo = v;
       hi = v;
@@ -187,62 +185,68 @@ void PlotWidget::auto_range(const Panel& panel, PanelLayout& L) const {
       lo = std::min(lo, v);
       hi = std::max(hi, v);
     }
-  };
+  }
+};
+
+// Folds the visible part of one series (plus one neighbour each side) into `e`.
+void grow_visible(const Series& sr, double x0, double x1, Extent& e) {
+  G_ASSERT(sr.valid());
+  const auto lo_it = std::lower_bound(sr.x.begin(), sr.x.end(), x0);
+  const auto hi_it = std::upper_bound(sr.x.begin(), sr.x.end(), x1);
+  size_t i0 = static_cast<size_t>(lo_it - sr.x.begin());
+  size_t i1 = static_cast<size_t>(hi_it - sr.x.begin());
+  if (i0 > 0) --i0;
+  if (i1 < sr.x.size()) ++i1;
+  for (size_t i = i0; i < i1; ++i) {
+    if (!std::isfinite(sr.y[i])) continue;
+    e.grow(sr.y[i]);
+    if (sr.style == Style::kRange) e.grow(sr.y2[i]);
+  }
+  if (sr.style == Style::kBars) e.grow(0.0);
+}
+
+// Turns a raw extent into tick-aligned axis bounds honouring the AxisSpec.
+void finish_axis(const AxisSpec& spec, Extent e, double& out_lo, double& out_hi) {
+  if (spec.fixed) {
+    out_lo = spec.min;
+    out_hi = spec.max;
+    return;
+  }
+  if (!e.any) {
+    e.lo = 0.0;
+    e.hi = 1.0;
+  }
+  if (spec.include_zero) e.lo = std::min(e.lo, 0.0);
+  // Breathing room so lines do not sit on the frame.
+  const double pad = (e.hi - e.lo) * 0.05;
+  e.lo -= pad;
+  e.hi += pad;
+  if (spec.include_zero && e.lo < 0.0 && e.hi > 0.0 && e.lo > -pad * 1.01) e.lo = 0.0;
+  nice_range(e.lo, e.hi, kYTicksTarget);
+  out_lo = e.lo;
+  out_hi = e.hi;
+  G_ASSERT(out_hi > out_lo);
+}
+
+}  // namespace
+
+void PlotWidget::auto_range(const Panel& panel, PanelLayout& L) const {
+  G_ASSERT(x1_ > x0_);
+  G_ASSERT(panel.series.size() <= kMaxSeriesPerPanel);
+  Extent left;
+  Extent right;
   for (const Series& sr : panel.series) {
     if (sr.style == Style::kBand || sr.x.empty()) continue;
-    const bool right = sr.axis == YAxisSide::kRight;
-    if (right) {
+    if (sr.axis == YAxisSide::kRight) {
       L.has_right = true;
+      grow_visible(sr, x0_, x1_, right);
     } else {
       L.has_left = true;
-    }
-    const auto lo_it = std::lower_bound(sr.x.begin(), sr.x.end(), x0_);
-    const auto hi_it = std::upper_bound(sr.x.begin(), sr.x.end(), x1_);
-    size_t i0 = static_cast<size_t>(lo_it - sr.x.begin());
-    size_t i1 = static_cast<size_t>(hi_it - sr.x.begin());
-    if (i0 > 0) --i0;
-    if (i1 < sr.x.size()) ++i1;
-    for (size_t i = i0; i < i1; ++i) {
-      if (!std::isfinite(sr.y[i])) continue;
-      if (right) {
-        grow(any_r, lo_r, hi_r, sr.y[i]);
-        if (sr.style == Style::kRange) grow(any_r, lo_r, hi_r, sr.y2[i]);
-      } else {
-        grow(any_l, lo_l, hi_l, sr.y[i]);
-        if (sr.style == Style::kRange) grow(any_l, lo_l, hi_l, sr.y2[i]);
-      }
-    }
-    if (sr.style == Style::kBars) {
-      if (right) {
-        grow(any_r, lo_r, hi_r, 0.0);
-      } else {
-        grow(any_l, lo_l, hi_l, 0.0);
-      }
+      grow_visible(sr, x0_, x1_, left);
     }
   }
-  auto finish = [](const AxisSpec& spec, bool any, double lo, double hi, double& out_lo,
-                   double& out_hi) {
-    if (spec.fixed) {
-      out_lo = spec.min;
-      out_hi = spec.max;
-      return;
-    }
-    if (!any) {
-      lo = 0.0;
-      hi = 1.0;
-    }
-    if (spec.include_zero) lo = std::min(lo, 0.0);
-    // Breathing room so lines do not sit on the frame.
-    const double pad = (hi - lo) * 0.05;
-    lo -= pad;
-    hi += pad;
-    if (spec.include_zero && lo < 0.0 && hi > 0.0 && lo > -pad * 1.01) lo = 0.0;
-    nice_range(lo, hi, kYTicksTarget);
-    out_lo = lo;
-    out_hi = hi;
-  };
-  finish(panel.left, any_l, lo_l, hi_l, L.left_lo, L.left_hi);
-  finish(panel.right, any_r, lo_r, hi_r, L.right_lo, L.right_hi);
+  finish_axis(panel.left, left, L.left_lo, L.left_hi);
+  finish_axis(panel.right, right, L.right_lo, L.right_hi);
 }
 
 float PlotWidget::y_to_px(double y, double lo, double hi, const D2D1_RECT_F& plot) const {
@@ -438,72 +442,68 @@ void PlotWidget::draw_panel(ID2D1RenderTarget* rt, const Panel& panel, const Pan
   if (bottom) draw_x_axis(rt, L);
 }
 
-void PlotWidget::draw_series(ID2D1RenderTarget* rt, const Series& sr, const PanelLayout& L) {
-  G_ASSERT(sr.valid());
-  if (sr.x.empty()) return;
-  const bool right = sr.axis == YAxisSide::kRight;
-  const double lo = right ? L.right_lo : L.left_lo;
-  const double hi = right ? L.right_hi : L.left_hi;
-  const D2D1_RECT_F& P = L.plot;
-  brush_->SetColor(to_d2d(sr.color));
-
-  if (sr.style == Style::kBand) {
-    const size_t n = sr.x.size();
-    for (size_t i = 0; i < n; ++i) {
-      if (sr.x2[i] < x0_ || sr.x[i] > x1_) continue;
-      const float a = x_to_px(std::max(sr.x[i], x0_));
-      const float b = x_to_px(std::min(sr.x2[i], x1_));
-      rt->FillRectangle(D2D1::RectF(a, P.top, std::max(b, a + 1.0f), P.bottom), brush_.Get());
-    }
-    return;
+void PlotWidget::draw_band(ID2D1RenderTarget* rt, const Series& sr, const D2D1_RECT_F& P) {
+  G_ASSERT(sr.style == Style::kBand);
+  const size_t n = sr.x.size();
+  for (size_t i = 0; i < n; ++i) {
+    if (sr.x2[i] < x0_ || sr.x[i] > x1_) continue;
+    const float a = x_to_px(std::max(sr.x[i], x0_));
+    const float b = x_to_px(std::min(sr.x2[i], x1_));
+    rt->FillRectangle(D2D1::RectF(a, P.top, std::max(b, a + 1.0f), P.bottom), brush_.Get());
   }
+}
 
-  if (sr.style == Style::kRange) {
-    const size_t n = sr.x.size();
-    size_t i0 = static_cast<size_t>(std::lower_bound(sr.x.begin(), sr.x.end(), x0_) - sr.x.begin());
-    size_t i1 = static_cast<size_t>(std::upper_bound(sr.x.begin(), sr.x.end(), x1_) - sr.x.begin());
-    if (i0 > 0) --i0;
-    if (i1 < n) ++i1;
-    if (i1 <= i0 + 1) return;
-    ComPtr<ID2D1PathGeometry> geom;
-    ComPtr<ID2D1GeometrySink> sink;
-    G_REQUIRE_VOID(SUCCEEDED(d2d_->CreatePathGeometry(&geom)) && SUCCEEDED(geom->Open(&sink)));
-    sink->BeginFigure(D2D1::Point2F(x_to_px(sr.x[i0]), y_to_px(sr.y2[i0], lo, hi, P)),
-                      D2D1_FIGURE_BEGIN_FILLED);
-    for (size_t i = i0 + 1; i < i1; ++i) {
-      sink->AddLine(D2D1::Point2F(x_to_px(sr.x[i]), y_to_px(sr.y2[i], lo, hi, P)));
-    }
-    for (size_t i = i1; i-- > i0;) {
-      sink->AddLine(D2D1::Point2F(x_to_px(sr.x[i]), y_to_px(sr.y[i], lo, hi, P)));
-    }
-    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-    G_REQUIRE_VOID(SUCCEEDED(sink->Close()));
-    rt->FillGeometry(geom.Get(), brush_.Get());
-    return;
+void PlotWidget::draw_range(ID2D1RenderTarget* rt, const Series& sr, double lo, double hi,
+                            const D2D1_RECT_F& P) {
+  G_ASSERT(sr.style == Style::kRange);
+  const size_t n = sr.x.size();
+  size_t i0 = static_cast<size_t>(std::lower_bound(sr.x.begin(), sr.x.end(), x0_) - sr.x.begin());
+  size_t i1 = static_cast<size_t>(std::upper_bound(sr.x.begin(), sr.x.end(), x1_) - sr.x.begin());
+  if (i0 > 0) --i0;
+  if (i1 < n) ++i1;
+  if (i1 <= i0 + 1) return;
+  ComPtr<ID2D1PathGeometry> geom;
+  ComPtr<ID2D1GeometrySink> sink;
+  G_REQUIRE_VOID(SUCCEEDED(d2d_->CreatePathGeometry(&geom)) && SUCCEEDED(geom->Open(&sink)));
+  sink->BeginFigure(D2D1::Point2F(x_to_px(sr.x[i0]), y_to_px(sr.y2[i0], lo, hi, P)),
+                    D2D1_FIGURE_BEGIN_FILLED);
+  for (size_t i = i0 + 1; i < i1; ++i) {
+    sink->AddLine(D2D1::Point2F(x_to_px(sr.x[i]), y_to_px(sr.y2[i], lo, hi, P)));
   }
-
-  if (sr.style == Style::kBars) {
-    const float zero = y_to_px(std::clamp(0.0, lo, hi), lo, hi, P);
-    const size_t n = sr.x.size();
-    for (size_t i = 0; i < n; ++i) {
-      const double xe = sr.bar_end(i);
-      if (xe < x0_ || sr.x[i] > x1_) continue;
-      const float a = x_to_px(sr.x[i]) + 1.0f;
-      const float b = std::max(x_to_px(xe) - 1.0f, a + 1.0f);
-      const float py = y_to_px(sr.y[i], lo, hi, P);
-      rt->FillRectangle(D2D1::RectF(a, std::min(py, zero), b, std::max(py, zero)), brush_.Get());
-    }
-    return;
+  for (size_t i = i1; i-- > i0;) {
+    sink->AddLine(D2D1::Point2F(x_to_px(sr.x[i]), y_to_px(sr.y[i], lo, hi, P)));
   }
+  sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+  G_REQUIRE_VOID(SUCCEEDED(sink->Close()));
+  rt->FillGeometry(geom.Get(), brush_.Get());
+}
 
+void PlotWidget::draw_bars(ID2D1RenderTarget* rt, const Series& sr, double lo, double hi,
+                           const D2D1_RECT_F& P) {
+  G_ASSERT(sr.style == Style::kBars);
+  const float zero = y_to_px(std::clamp(0.0, lo, hi), lo, hi, P);
+  const size_t n = sr.x.size();
+  for (size_t i = 0; i < n; ++i) {
+    const double xe = sr.bar_end(i);
+    if (xe < x0_ || sr.x[i] > x1_) continue;
+    const float a = x_to_px(sr.x[i]) + 1.0f;
+    const float b = std::max(x_to_px(xe) - 1.0f, a + 1.0f);
+    const float py = y_to_px(sr.y[i], lo, hi, P);
+    rt->FillRectangle(D2D1::RectF(a, std::min(py, zero), b, std::max(py, zero)), brush_.Get());
+  }
+}
+
+// Lines, steps and point markers share one decimated polyline.
+void PlotWidget::draw_path(ID2D1RenderTarget* rt, const Series& sr, double lo, double hi,
+                           const D2D1_RECT_F& P) {
+  G_ASSERT(sr.style == Style::kLine || sr.style == Style::kStep || sr.style == Style::kPoints);
   const int columns = static_cast<int>(std::max(1.0f, P.right - P.left));
   decimate_minmax(sr.x, sr.y, x0_, x1_, columns, scratch_);
   if (scratch_.empty()) return;
 
   ComPtr<ID2D1PathGeometry> geom;
-  G_REQUIRE_VOID(SUCCEEDED(d2d_->CreatePathGeometry(&geom)));
   ComPtr<ID2D1GeometrySink> sink;
-  G_REQUIRE_VOID(SUCCEEDED(geom->Open(&sink)));
+  G_REQUIRE_VOID(SUCCEEDED(d2d_->CreatePathGeometry(&geom)) && SUCCEEDED(geom->Open(&sink)));
   const auto pt = [&](const Point& p) {
     return D2D1::Point2F(x_to_px(p.x), y_to_px(p.y, lo, hi, P));
   };
@@ -533,11 +533,29 @@ void PlotWidget::draw_series(ID2D1RenderTarget* rt, const Series& sr, const Pane
   const float width = s(sr.style == Style::kPoints ? 1.0f : sr.width);
   rt->DrawGeometry(geom.Get(), brush_.Get(), width);
 
-  if (sr.style == Style::kPoints && n <= 4000) {
+  if (sr.style == Style::kPoints && n <= kMaxPointMarkers) {
     for (size_t i = 0; i < n; ++i) {
-      const D2D1_POINT_2F c = pt(scratch_[i]);
-      rt->FillEllipse(D2D1::Ellipse(c, s(kPointRadius), s(kPointRadius)), brush_.Get());
+      rt->FillEllipse(D2D1::Ellipse(pt(scratch_[i]), s(kPointRadius), s(kPointRadius)),
+                      brush_.Get());
     }
+  }
+}
+
+void PlotWidget::draw_series(ID2D1RenderTarget* rt, const Series& sr, const PanelLayout& L) {
+  G_ASSERT(rt != nullptr);
+  G_ASSERT(sr.valid());
+  if (sr.x.empty()) return;
+  const bool right = sr.axis == YAxisSide::kRight;
+  const double lo = right ? L.right_lo : L.left_lo;
+  const double hi = right ? L.right_hi : L.left_hi;
+  brush_->SetColor(to_d2d(sr.color));
+  switch (sr.style) {
+    case Style::kBand: draw_band(rt, sr, L.plot); break;
+    case Style::kRange: draw_range(rt, sr, lo, hi, L.plot); break;
+    case Style::kBars: draw_bars(rt, sr, lo, hi, L.plot); break;
+    case Style::kLine:
+    case Style::kStep:
+    case Style::kPoints: draw_path(rt, sr, lo, hi, L.plot); break;
   }
 }
 
@@ -559,6 +577,7 @@ void PlotWidget::draw_markers(ID2D1RenderTarget* rt) {
 }
 
 void PlotWidget::collect_hover(double xq, std::vector<HoverEntry>& out) const {
+  G_ASSERT(x1_ > x0_);
   out.clear();
   const double tol = (x1_ - x0_) * kHoverToleranceFrac;
   for (const Panel& p : fig_.panels) {
@@ -587,6 +606,7 @@ void PlotWidget::collect_hover(double xq, std::vector<HoverEntry>& out) const {
 }
 
 void PlotWidget::draw_hover(ID2D1RenderTarget* rt) {
+  G_ASSERT(rt != nullptr && hover_);
   if (layout_.empty() || hover_px_ < plot_left_ || hover_px_ > plot_right_) return;
   const float top = layout_.front().plot.top;
   const float bottom = layout_.back().plot.bottom;

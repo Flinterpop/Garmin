@@ -127,7 +127,6 @@ struct Figure {
   // Computes x_min/x_max from every series (and markers). Returns false if
   // there is no data at all.
   bool finalize();
-  size_t point_count() const;
 };
 
 constexpr size_t kMaxPanels = 8;

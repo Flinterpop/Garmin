@@ -69,6 +69,7 @@ std::string day_line(const ski::DayStats& d) {
 }  // namespace
 
 std::vector<SkiEntry> list_ski_days(store::Db& db) {
+  G_ASSERT(db.is_open());
   std::vector<SkiEntry> out;
   SkiEntry season;
   season.season = true;
@@ -100,6 +101,7 @@ std::vector<SkiEntry> list_ski_days(store::Db& db) {
 }
 
 Figure load_ski_day(store::Db& db, const SkiEntry& e) {
+  G_ASSERT(db.is_open());
   Figure fig;
   fig.xmode = plot::XMode::kElapsed;
   G_ASSERT(!e.season);
@@ -167,34 +169,26 @@ Figure load_ski_day(store::Db& db, const SkiEntry& e) {
   return fig;
 }
 
-Figure load_ski_season(store::Db& db) {
-  Figure fig;
-  fig.xmode = plot::XMode::kTime;
-  fig.title = "Ski season overview";
+namespace {
+
+struct SkiSeasonSeries {
   Series vert = make("Vertical", "m", colors::kBodyBattery, Style::kBars);
-  Series runs_s = make("Runs", "", colors::kStress, Style::kPoints, YAxisSide::kRight);
+  Series runs = make("Runs", "", colors::kStress, Style::kPoints, YAxisSide::kRight);
   Series top = make("Top speed", "km/h", colors::kSpeed, Style::kPoints);
   Series avg_run = make("Avg run", "m", colors::kCadence, Style::kPoints, YAxisSide::kRight);
   Series dist = make("Distance", "km", colors::kAltitude, Style::kBars);
   Series hr = make("Avg HR skiing", "bpm", colors::kHeartRate, Style::kPoints, YAxisSide::kRight);
-
-  constexpr double kBarHalf = 0.45 * 86400.0;
-  const std::vector<SkiEntry> days = list_ski_days(db);
   double season_vertical = 0.0;
   size_t season_runs = 0;
-  for (const SkiEntry& e : days) {
-    if (e.season) continue;
-    const ski::Trace tr = load_trace(db, e.fit_file_id, e.start_ts);
-    if (tr.t.size() < 60) continue;
-    const std::vector<ski::Run> runs = ski::detect_runs(tr);
-    const ski::DayStats d = ski::compute_stats(tr, runs);
-    if (d.runs == 0) continue;
-    const double t = static_cast<double>(e.start_ts);
+
+  void add(double t, const ski::DayStats& d) {
+    G_ASSERT(d.runs > 0);
+    constexpr double kBarHalf = 0.45 * 86400.0;
     vert.x.push_back(t - kBarHalf);
     vert.x2.push_back(t + kBarHalf);
     vert.y.push_back(d.vertical_m);
-    runs_s.x.push_back(t);
-    runs_s.y.push_back(static_cast<double>(d.runs));
+    runs.x.push_back(t);
+    runs.y.push_back(static_cast<double>(d.runs));
     top.x.push_back(t);
     top.y.push_back(d.max_speed_mps * kKmh);
     avg_run.x.push_back(t);
@@ -209,46 +203,59 @@ Figure load_ski_season(store::Db& db) {
     season_vertical += d.vertical_m;
     season_runs += d.runs;
   }
-  auto flip = [](Series& s) {
-    std::reverse(s.x.begin(), s.x.end());
-    std::reverse(s.y.begin(), s.y.end());
-    std::reverse(s.x2.begin(), s.x2.end());
-  };
-  for (Series* s : {&vert, &runs_s, &top, &avg_run, &dist, &hr}) {
-    flip(*s);
-    s->gap_break = 21.0 * 86400.0;
+
+  void finish() {
+    for (Series* s : {&vert, &runs, &top, &avg_run, &dist, &hr}) {
+      std::reverse(s->x.begin(), s->x.end());
+      std::reverse(s->y.begin(), s->y.end());
+      std::reverse(s->x2.begin(), s->x2.end());
+      s->gap_break = 21.0 * 86400.0;
+    }
   }
+};
+
+}  // namespace
+
+Figure load_ski_season(store::Db& db) {
+  G_ASSERT(db.is_open());
+  Figure fig;
+  fig.xmode = plot::XMode::kTime;
+  SkiSeasonSeries ss;
+  for (const SkiEntry& e : list_ski_days(db)) {
+    if (e.season) continue;
+    const ski::Trace tr = load_trace(db, e.fit_file_id, e.start_ts);
+    if (tr.t.size() < 60) continue;
+    const ski::DayStats d = ski::compute_stats(tr, ski::detect_runs(tr));
+    if (d.runs > 0) ss.add(static_cast<double>(e.start_ts), d);
+  }
+  ss.finish();
   char buf[96] = {};
   std::snprintf(buf, sizeof(buf), "Ski season overview   %zu runs, %.0f m vertical in total",
-                season_runs, season_vertical);
+                ss.season_runs, ss.season_vertical);
   fig.title = buf;
 
-  {
-    Panel p;
-    p.title = "Vertical per day";
-    p.left.include_zero = true;
-    p.right.include_zero = true;
-    p.series.push_back(std::move(vert));
-    p.series.push_back(std::move(runs_s));
-    fig.panels.push_back(std::move(p));
-  }
-  {
-    Panel p;
-    p.title = "Speed and run size";
-    p.left.include_zero = true;
-    p.right.include_zero = true;
-    p.series.push_back(std::move(top));
-    p.series.push_back(std::move(avg_run));
-    fig.panels.push_back(std::move(p));
-  }
-  {
-    Panel p;
-    p.title = "Distance and effort";
-    p.left.include_zero = true;
-    p.series.push_back(std::move(dist));
-    if (!hr.x.empty()) p.series.push_back(std::move(hr));
-    fig.panels.push_back(std::move(p));
-  }
+  Panel vertical;
+  vertical.title = "Vertical per day";
+  vertical.left.include_zero = true;
+  vertical.right.include_zero = true;
+  vertical.series.push_back(std::move(ss.vert));
+  vertical.series.push_back(std::move(ss.runs));
+  fig.panels.push_back(std::move(vertical));
+
+  Panel speed;
+  speed.title = "Speed and run size";
+  speed.left.include_zero = true;
+  speed.right.include_zero = true;
+  speed.series.push_back(std::move(ss.top));
+  speed.series.push_back(std::move(ss.avg_run));
+  fig.panels.push_back(std::move(speed));
+
+  Panel effort;
+  effort.title = "Distance and effort";
+  effort.left.include_zero = true;
+  effort.series.push_back(std::move(ss.dist));
+  if (!ss.hr.x.empty()) effort.series.push_back(std::move(ss.hr));
+  fig.panels.push_back(std::move(effort));
   return fig;
 }
 

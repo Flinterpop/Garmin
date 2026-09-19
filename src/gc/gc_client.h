@@ -48,8 +48,6 @@ class GarminClient {
   bool daily_sleep(const std::string& date, nlohmann::json& out, std::string& err);
   bool daily_stress(const std::string& date, nlohmann::json& out, std::string& err);
   bool daily_hrv(const std::string& date, nlohmann::json& out, std::string& err);
-  bool body_battery(const std::string& start, const std::string& end, nlohmann::json& out,
-                    std::string& err);
   bool weight_range(const std::string& start, const std::string& end, nlohmann::json& out,
                     std::string& err);
   bool activities(int start, int limit, nlohmann::json& out, std::string& err);

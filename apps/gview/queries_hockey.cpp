@@ -90,6 +90,7 @@ double hockey_hr_max(store::Db& db) {
 }
 
 std::vector<GameEntry> list_games(store::Db& db) {
+  G_ASSERT(db.is_open());
   std::vector<GameEntry> out;
   GameEntry season;
   season.season = true;
@@ -122,6 +123,7 @@ std::vector<GameEntry> list_games(store::Db& db) {
 }
 
 Figure load_game(store::Db& db, const GameEntry& g, double hr_max) {
+  G_ASSERT(db.is_open());
   Figure fig;
   fig.xmode = plot::XMode::kElapsed;
   G_ASSERT(!g.season);
@@ -170,13 +172,10 @@ Figure load_game(store::Db& db, const GameEntry& g, double hr_max) {
   return fig;
 }
 
-Figure load_season(store::Db& db, double hr_max) {
-  Figure fig;
-  fig.xmode = plot::XMode::kTime;
-  char buf[96] = {};
-  std::snprintf(buf, sizeof(buf), "Hockey season overview   (zones from HR max %.0f)", hr_max);
-  fig.title = buf;
+namespace {
 
+// Per-game season series, filled newest-first and flipped once at the end.
+struct SeasonSeries {
   Series avg = make("Avg HR", "bpm", plot::rgb(0xE377C2), Style::kPoints);
   Series mx = make("Max HR", "bpm", colors::kHeartRate, Style::kPoints);
   Series count = make("Shifts", "", colors::kBodyBattery, Style::kPoints);
@@ -184,17 +183,8 @@ Figure load_season(store::Db& db, double hr_max) {
   Series z4 = make("Z4+ time", "min", colors::kStress, Style::kBars);
   Series dur = make("Recording", "min", colors::kAltitude, Style::kPoints, YAxisSide::kRight);
 
-  const std::vector<GameEntry> games = list_games(db);
-  std::vector<double> x;
-  std::vector<double> y;
-  constexpr double kBarHalf = 0.45 * 86400.0;
-  for (const GameEntry& g : games) {
-    if (g.season) continue;
-    load_hr(db, g.fit_file_id, g.start_ts, x, y);
-    if (x.size() < 60) continue;
-    const std::vector<hockey::Shift> shifts = hockey::detect_shifts(x, y);
-    const hockey::GameStats s = hockey::compute_stats(x, y, shifts, hr_max);
-    const double t = static_cast<double>(g.start_ts);
+  void add(double t, const hockey::GameStats& s) {
+    constexpr double kBarHalf = 0.45 * 86400.0;
     avg.x.push_back(t);
     avg.y.push_back(s.avg_hr);
     mx.x.push_back(t);
@@ -209,43 +199,62 @@ Figure load_season(store::Db& db, double hr_max) {
     dur.x.push_back(t);
     dur.y.push_back(s.duration_s / 60.0);
   }
-  // Series were filled newest-first; the plot engine wants ascending x.
-  auto flip = [](Series& s) {
-    std::reverse(s.x.begin(), s.x.end());
-    std::reverse(s.y.begin(), s.y.end());
-    std::reverse(s.x2.begin(), s.x2.end());
-  };
-  for (Series* s : {&avg, &mx, &count, &on, &z4, &dur}) {
-    flip(*s);
-    s->gap_break = 21.0 * 86400.0;
-  }
 
-  {
-    Panel p;
-    p.title = "Heart rate per game";
-    p.series.push_back(std::move(avg));
-    p.series.push_back(std::move(mx));
-    add_zone_lines(p, hr_max);
-    fig.panels.push_back(std::move(p));
+  void finish() {
+    for (Series* s : {&avg, &mx, &count, &on, &z4, &dur}) {
+      std::reverse(s->x.begin(), s->x.end());
+      std::reverse(s->y.begin(), s->y.end());
+      std::reverse(s->x2.begin(), s->x2.end());
+      s->gap_break = 21.0 * 86400.0;
+    }
   }
-  {
-    Panel p;
-    p.title = "Shifts per game";
-    p.left.include_zero = true;
-    p.right.include_zero = true;
-    p.series.push_back(std::move(count));
-    p.series.push_back(std::move(on));
-    fig.panels.push_back(std::move(p));
+};
+
+}  // namespace
+
+Figure load_season(store::Db& db, double hr_max) {
+  G_ASSERT(db.is_open());
+  G_ASSERT(hr_max > 100.0);
+  Figure fig;
+  fig.xmode = plot::XMode::kTime;
+  char buf[96] = {};
+  std::snprintf(buf, sizeof(buf), "Hockey season overview   (zones from HR max %.0f)", hr_max);
+  fig.title = buf;
+
+  SeasonSeries ss;
+  std::vector<double> x;
+  std::vector<double> y;
+  for (const GameEntry& g : list_games(db)) {
+    if (g.season) continue;
+    load_hr(db, g.fit_file_id, g.start_ts, x, y);
+    if (x.size() < 60) continue;
+    const std::vector<hockey::Shift> shifts = hockey::detect_shifts(x, y);
+    ss.add(static_cast<double>(g.start_ts), hockey::compute_stats(x, y, shifts, hr_max));
   }
-  {
-    Panel p;
-    p.title = "Hard minutes";
-    p.left.include_zero = true;
-    p.right.include_zero = true;
-    p.series.push_back(std::move(z4));
-    p.series.push_back(std::move(dur));
-    fig.panels.push_back(std::move(p));
-  }
+  ss.finish();
+
+  Panel hr;
+  hr.title = "Heart rate per game";
+  hr.series.push_back(std::move(ss.avg));
+  hr.series.push_back(std::move(ss.mx));
+  add_zone_lines(hr, hr_max);
+  fig.panels.push_back(std::move(hr));
+
+  Panel shifts;
+  shifts.title = "Shifts per game";
+  shifts.left.include_zero = true;
+  shifts.right.include_zero = true;
+  shifts.series.push_back(std::move(ss.count));
+  shifts.series.push_back(std::move(ss.on));
+  fig.panels.push_back(std::move(shifts));
+
+  Panel hard;
+  hard.title = "Hard minutes";
+  hard.left.include_zero = true;
+  hard.right.include_zero = true;
+  hard.series.push_back(std::move(ss.z4));
+  hard.series.push_back(std::move(ss.dur));
+  fig.panels.push_back(std::move(hard));
   return fig;
 }
 

@@ -163,27 +163,33 @@ Stmt::~Stmt() {
   if (stmt_ != nullptr) sqlite3_finalize(stmt_);
 }
 
+// A failed bind is a programming error (bad index or finalized statement),
+// never a data condition, so it asserts rather than reports.
 Stmt& Stmt::bind(int idx, int64_t v) {
-  G_ASSERT(stmt_ != nullptr);
-  sqlite3_bind_int64(stmt_, idx, v);
+  G_ASSERT(stmt_ != nullptr && idx >= 1);
+  const int rc = sqlite3_bind_int64(stmt_, idx, v);
+  G_ASSERT(rc == SQLITE_OK);
   return *this;
 }
 
 Stmt& Stmt::bind(int idx, double v) {
-  G_ASSERT(stmt_ != nullptr);
-  sqlite3_bind_double(stmt_, idx, v);
+  G_ASSERT(stmt_ != nullptr && idx >= 1);
+  const int rc = sqlite3_bind_double(stmt_, idx, v);
+  G_ASSERT(rc == SQLITE_OK);
   return *this;
 }
 
 Stmt& Stmt::bind(int idx, const std::string& v) {
-  G_ASSERT(stmt_ != nullptr);
-  sqlite3_bind_text(stmt_, idx, v.data(), static_cast<int>(v.size()), SQLITE_TRANSIENT);
+  G_ASSERT(stmt_ != nullptr && idx >= 1);
+  const int rc = sqlite3_bind_text(stmt_, idx, v.data(), static_cast<int>(v.size()), SQLITE_TRANSIENT);
+  G_ASSERT(rc == SQLITE_OK);
   return *this;
 }
 
 Stmt& Stmt::bind_null(int idx) {
-  G_ASSERT(stmt_ != nullptr);
-  sqlite3_bind_null(stmt_, idx);
+  G_ASSERT(stmt_ != nullptr && idx >= 1);
+  const int rc = sqlite3_bind_null(stmt_, idx);
+  G_ASSERT(rc == SQLITE_OK);
   return *this;
 }
 

@@ -528,17 +528,6 @@ const char* sport_name(uint8_t sport) {
   }
 }
 
-const char* sleep_level_name(uint8_t level) {
-  switch (level) {
-    case 0: return "unmeasurable";
-    case 1: return "awake";
-    case 2: return "light";
-    case 3: return "deep";
-    case 4: return "rem";
-    default: return "unknown";
-  }
-}
-
 double semicircles_to_degrees(int32_t semicircles) {
   return static_cast<double>(semicircles) * (180.0 / 2147483648.0);
 }

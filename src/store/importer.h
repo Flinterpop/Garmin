@@ -23,7 +23,6 @@ bool import_heart_rate(Db& db, const nlohmann::json& j, ImportCounts& c, std::st
 bool import_sleep(Db& db, const std::string& date, const nlohmann::json& j, ImportCounts& c,
                   std::string& err);
 bool import_stress(Db& db, const nlohmann::json& j, ImportCounts& c, std::string& err);
-bool import_body_battery(Db& db, const nlohmann::json& j, ImportCounts& c, std::string& err);
 bool import_hrv(Db& db, const std::string& date, const nlohmann::json& j, ImportCounts& c,
                 std::string& err);
 bool import_weight(Db& db, const nlohmann::json& j, ImportCounts& c, std::string& err);

@@ -278,6 +278,8 @@ void CalendarWidget::draw_cell(ID2D1RenderTarget* rt, const DayCell& d, const D2
 }
 
 void CalendarWidget::draw_tooltip(ID2D1RenderTarget* rt, const DayCell& d) {
+  G_ASSERT(rt != nullptr && brush_);
+  G_ASSERT(d.day >= 1 && d.day <= 31);
   std::vector<std::wstring> lines;
   char buf[96] = {};
   std::snprintf(buf, sizeof(buf), "%d %s", d.day, month_.title.c_str());

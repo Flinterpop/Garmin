@@ -84,7 +84,6 @@ struct App {
   double hockey_hr_max = 190.0;
   float scale = 1.0f;
   bool dragging = false;
-  bool moved_while_dragging = false;
   int drag_last_x = 0;
   int drag_last_y = 0;
   bool tracking_mouse = false;
@@ -148,6 +147,7 @@ void apply_list_font(App& a) {
 }
 
 void fill_list(App& a) {
+  G_ASSERT(a.list != nullptr);
   SendMessageW(a.list, WM_SETREDRAW, FALSE, 0);
   SendMessageW(a.list, LB_RESETCONTENT, 0, 0);
   auto add = [&](const std::string& s) {
@@ -209,73 +209,71 @@ void select_only(App& a, int index) {
   }
 }
 
-void show_selection(App& a) {
-  const std::vector<int> picked = selected_indices(a);
+// Builds the figure (or calendar / map content) for the current list
+// selection. Returns false when the mode paints something other than a Figure.
+bool figure_for_selection(App& a, const std::vector<int>& picked, plot::Figure& fig,
+                          std::string& title) {
   const int sel = picked.empty() ? -1 : picked.front();
+  const size_t idx = static_cast<size_t>(sel);
+  if (sel < 0) return a.mode != Mode::kCalendar && a.mode != Mode::kMap;
+  switch (a.mode) {
+    case Mode::kDay:
+      if (idx < a.days.size()) fig = gview::load_day(a.db, a.days[idx].date);
+      return true;
+    case Mode::kTrends:
+      if (idx < a.ranges.size()) fig = gview::load_trends(a.db, a.ranges[idx].days);
+      return true;
+    case Mode::kActivity:
+      if (idx < a.activities.size()) fig = gview::load_activity(a.db, a.activities[idx]);
+      return true;
+    case Mode::kHockey:
+      if (idx < a.games.size()) {
+        const gview::GameEntry& g = a.games[idx];
+        fig = g.season ? gview::load_season(a.db, a.hockey_hr_max)
+                       : gview::load_game(a.db, g, a.hockey_hr_max);
+      }
+      return true;
+    case Mode::kSki:
+      if (idx < a.ski_days.size()) {
+        const gview::SkiEntry& e = a.ski_days[idx];
+        fig = e.season ? gview::load_ski_season(a.db) : gview::load_ski_day(a.db, e);
+      }
+      return true;
+    case Mode::kCompare:
+      if (picked.size() >= 2 && static_cast<size_t>(picked[1]) < a.activities.size()) {
+        fig = gview::load_compare(a.db, a.activities[idx],
+                                  a.activities[static_cast<size_t>(picked[1])]);
+      } else if (idx < a.activities.size()) {
+        fig = gview::load_activity(a.db, a.activities[idx]);
+        fig.title = "Compare: Ctrl-click a second activity   (" + fig.title + ")";
+      }
+      return true;
+    case Mode::kSleep:
+      if (idx < a.nights.size()) fig = gview::load_night(a.db, a.nights[idx]);
+      return true;
+    case Mode::kCalendar:
+      if (idx < a.months.size()) {
+        plot::MonthData md = gview::load_month(a.db, a.months[idx].year, a.months[idx].month);
+        title = "Calendar  " + md.title;
+        a.calendar.set_month(std::move(md));
+      }
+      return false;
+    case Mode::kMap:
+      if (idx < a.gps_activities.size()) {
+        map::Track t = gview::load_track(a.db, a.gps_activities[idx]);
+        title = "Map  " + t.title;
+        a.mapw.set_track(std::move(t));
+      }
+      return false;
+  }
+  return true;
+}
+
+void show_selection(App& a) {
+  G_ASSERT(a.list != nullptr);
   plot::Figure fig;
   std::string title;
-  if (sel >= 0) {
-    switch (a.mode) {
-      case Mode::kDay:
-        if (static_cast<size_t>(sel) < a.days.size()) {
-          fig = gview::load_day(a.db, a.days[static_cast<size_t>(sel)].date);
-        }
-        break;
-      case Mode::kTrends:
-        if (static_cast<size_t>(sel) < a.ranges.size()) {
-          fig = gview::load_trends(a.db, a.ranges[static_cast<size_t>(sel)].days);
-        }
-        break;
-      case Mode::kActivity:
-        if (static_cast<size_t>(sel) < a.activities.size()) {
-          fig = gview::load_activity(a.db, a.activities[static_cast<size_t>(sel)]);
-        }
-        break;
-      case Mode::kHockey:
-        if (static_cast<size_t>(sel) < a.games.size()) {
-          const gview::GameEntry& g = a.games[static_cast<size_t>(sel)];
-          fig = g.season ? gview::load_season(a.db, a.hockey_hr_max)
-                         : gview::load_game(a.db, g, a.hockey_hr_max);
-        }
-        break;
-      case Mode::kCalendar:
-        if (static_cast<size_t>(sel) < a.months.size()) {
-          const gview::MonthEntry& m = a.months[static_cast<size_t>(sel)];
-          plot::MonthData md = gview::load_month(a.db, m.year, m.month);
-          title = "Calendar  " + md.title;
-          a.calendar.set_month(std::move(md));
-        }
-        break;
-      case Mode::kMap:
-        if (static_cast<size_t>(sel) < a.gps_activities.size()) {
-          map::Track t = gview::load_track(a.db, a.gps_activities[static_cast<size_t>(sel)]);
-          title = "Map  " + t.title;
-          a.mapw.set_track(std::move(t));
-        }
-        break;
-      case Mode::kSki:
-        if (static_cast<size_t>(sel) < a.ski_days.size()) {
-          const gview::SkiEntry& e = a.ski_days[static_cast<size_t>(sel)];
-          fig = e.season ? gview::load_ski_season(a.db) : gview::load_ski_day(a.db, e);
-        }
-        break;
-      case Mode::kCompare:
-        if (picked.size() >= 2 && static_cast<size_t>(picked[1]) < a.activities.size()) {
-          fig = gview::load_compare(a.db, a.activities[static_cast<size_t>(picked[0])],
-                                    a.activities[static_cast<size_t>(picked[1])]);
-        } else if (static_cast<size_t>(sel) < a.activities.size()) {
-          fig = gview::load_activity(a.db, a.activities[static_cast<size_t>(sel)]);
-          fig.title = "Compare: Ctrl-click a second activity   (" + fig.title + ")";
-        }
-        break;
-      case Mode::kSleep:
-        if (static_cast<size_t>(sel) < a.nights.size()) {
-          fig = gview::load_night(a.db, a.nights[static_cast<size_t>(sel)]);
-        }
-        break;
-    }
-  }
-  if (a.mode != Mode::kCalendar && a.mode != Mode::kMap) {
+  if (figure_for_selection(a, selected_indices(a), fig, title)) {
     title = fig.title;
     a.widget.set_figure(std::move(fig));
   }
@@ -395,137 +393,199 @@ bool in_plot(const App& a, int x, int y) {
   return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
 }
 
+// ---- message handlers, one per message, so wnd_proc stays a dispatch table
+
+void set_all_hover(App& a, float x, float y, bool inside) {
+  a.widget.set_hover(x, y, inside);
+  a.calendar.set_hover(x, y, inside);
+  a.mapw.set_hover(x, y, inside);
+}
+
+void apply_scale(App& a) {
+  G_ASSERT(a.scale > 0.1f);
+  a.widget.set_dpi_scale(a.scale);
+  a.calendar.set_dpi_scale(a.scale);
+  a.mapw.set_dpi_scale(a.scale);
+  apply_list_font(a);
+}
+
+void on_create(App& a, HWND hwnd) {
+  G_ASSERT(a.hwnd == nullptr);
+  a.hwnd = hwnd;
+  a.scale = dpi_scale(hwnd);
+  a.list = CreateWindowExW(0, L"LISTBOX", nullptr,
+                           WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT |
+                               LBS_EXTENDEDSEL | WS_BORDER,
+                           0, 0, 10, 10, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kListId)),
+                           nullptr, nullptr);
+  G_ASSERT(a.list != nullptr);
+  const BOOL subclassed = SetWindowSubclass(a.list, list_proc, 0, 0);
+  G_ASSERT(subclassed);
+  apply_scale(a);
+  if (!a.tiles.start(gutil::app_data_dir() / L"tiles", hwnd, kMsgTileReady)) {
+    MessageBoxW(hwnd, L"Could not create the map tile cache directory; the Map view will be empty.",
+                L"Garmin viewer", MB_ICONWARNING);
+  }
+  layout(a);
+  reload(a);
+}
+
+void on_dpi_changed(App& a, HWND hwnd, WPARAM wp, LPARAM lp) {
+  a.scale = static_cast<float>(HIWORD(wp)) / 96.0f;
+  apply_scale(a);
+  const RECT* r = reinterpret_cast<const RECT*>(lp);
+  G_ASSERT(r != nullptr);
+  SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
+               SWP_NOZORDER | SWP_NOACTIVATE);
+  layout(a);
+}
+
+// Returns the mode for a View menu id / digit key, or false if it is not one.
+bool mode_for_id(int id, Mode& out) {
+  if (id < kIdmViewDay || id > kIdmViewSleep) return false;
+  out = static_cast<Mode>(id - kIdmViewDay);
+  return true;
+}
+
+void on_command(App& a, HWND hwnd, WPARAM wp) {
+  const int id = LOWORD(wp);
+  if (id == kListId) {
+    if (HIWORD(wp) == LBN_SELCHANGE) show_selection(a);
+    return;
+  }
+  Mode m = Mode::kDay;
+  if (mode_for_id(id, m)) {
+    set_mode(a, m);
+    return;
+  }
+  switch (id) {
+    case kIdmFit:
+      a.widget.fit_x();
+      break;
+    case kIdmZoomIn:
+    case kIdmZoomOut: {
+      const RECT r = plot_rect(a);
+      const float mid = static_cast<float>(r.left + r.right) / 2.0f;
+      a.widget.zoom_at(mid, id == kIdmZoomIn ? kKeyZoom : 1.0 / kKeyZoom);
+      break;
+    }
+    case kIdmReload:
+      reload(a);
+      return;
+    case kIdmExit:
+      DestroyWindow(hwnd);
+      return;
+    default:
+      return;
+  }
+  InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// Returns true when handled.
+bool on_mouse_wheel(App& a, HWND hwnd, WPARAM wp, LPARAM lp) {
+  POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+  ScreenToClient(hwnd, &pt);
+  if (!in_plot(a, pt.x, pt.y) || a.mode == Mode::kCalendar) return false;
+  const int notches = GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
+  if (a.mode == Mode::kMap) {
+    a.mapw.zoom_step(static_cast<float>(pt.x), static_cast<float>(pt.y), notches > 0 ? 1 : -1);
+  } else {
+    double factor = 1.0;
+    const int steps = std::min(10, notches < 0 ? -notches : notches);
+    for (int i = 0; i < steps; ++i) {
+      factor *= notches > 0 ? kWheelZoomPerNotch : 1.0 / kWheelZoomPerNotch;
+    }
+    a.widget.zoom_at(static_cast<float>(pt.x), factor);
+  }
+  InvalidateRect(hwnd, nullptr, FALSE);
+  return true;
+}
+
+bool on_button_down(App& a, HWND hwnd, LPARAM lp) {
+  const int x = GET_X_LPARAM(lp);
+  const int y = GET_Y_LPARAM(lp);
+  if (!in_plot(a, x, y) || a.mode == Mode::kCalendar) return false;
+  a.dragging = true;
+  a.drag_last_x = x;
+  a.drag_last_y = y;
+  SetCapture(hwnd);
+  SetFocus(hwnd);
+  return true;
+}
+
+void on_mouse_move(App& a, HWND hwnd, LPARAM lp) {
+  const int x = GET_X_LPARAM(lp);
+  const int y = GET_Y_LPARAM(lp);
+  if (!a.tracking_mouse) {
+    TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
+    a.tracking_mouse = TrackMouseEvent(&tme) != 0;
+  }
+  if (a.dragging) {
+    const int dx = x - a.drag_last_x;
+    const int dy = y - a.drag_last_y;
+    if (a.mode == Mode::kMap) {
+      a.mapw.pan_pixels(static_cast<float>(dx), static_cast<float>(dy));
+    } else if (dx != 0) {
+      a.widget.pan_pixels(static_cast<float>(dx));
+    }
+    a.drag_last_x = x;
+    a.drag_last_y = y;
+  }
+  set_all_hover(a, static_cast<float>(x), static_cast<float>(y), in_plot(a, x, y));
+  InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// Returns true when handled (the caller repaints); false defers to DefWindowProc.
+bool on_key_down(App& a, WPARAM key) {
+  if (key >= '1' && key <= '9') {
+    set_mode(a, static_cast<Mode>(key - '1'));
+    return true;
+  }
+  const RECT r = plot_rect(a);
+  const float w = static_cast<float>(r.right - r.left);
+  const float mid = static_cast<float>(r.left + r.right) / 2.0f;
+  switch (key) {
+    case VK_HOME:
+      if (a.mode == Mode::kMap) {
+        a.mapw.fit();
+      } else {
+        a.widget.fit_x();
+      }
+      return true;
+    case VK_LEFT: a.widget.pan_pixels(w * kKeyPanFrac); return true;
+    case VK_RIGHT: a.widget.pan_pixels(-w * kKeyPanFrac); return true;
+    case VK_UP:
+    case VK_PRIOR: move_list_selection(a, -1); return true;
+    case VK_DOWN:
+    case VK_NEXT: move_list_selection(a, 1); return true;
+    case VK_ADD:
+    case VK_OEM_PLUS: a.widget.zoom_at(mid, kKeyZoom); return true;
+    case VK_SUBTRACT:
+    case VK_OEM_MINUS: a.widget.zoom_at(mid, 1.0 / kKeyZoom); return true;
+    case VK_F5: reload(a); return true;
+    default: return false;
+  }
+}
+
 LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   App* a = g_app;
+  G_ASSERT(a != nullptr);
   switch (msg) {
-    case WM_CREATE: {
-      G_ASSERT(a != nullptr);
-      a->hwnd = hwnd;
-      a->scale = dpi_scale(hwnd);
-      a->list = CreateWindowExW(0, L"LISTBOX", nullptr,
-                                WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY |
-                                    LBS_NOINTEGRALHEIGHT | LBS_EXTENDEDSEL | WS_BORDER,
-                                0, 0, 10, 10, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kListId)), nullptr,
-                                nullptr);
-      SetWindowSubclass(a->list, list_proc, 0, 0);
-      apply_list_font(*a);
-      a->widget.set_dpi_scale(a->scale);
-      a->calendar.set_dpi_scale(a->scale);
-      a->mapw.set_dpi_scale(a->scale);
-      a->tiles.start(gutil::app_data_dir() / L"tiles", hwnd, kMsgTileReady);
-      layout(*a);
-      reload(*a);
-      return 0;
-    }
+    case WM_CREATE: on_create(*a, hwnd); return 0;
     case WM_SIZE:
-      if (a != nullptr && a->list != nullptr) layout(*a);
+      if (a->list != nullptr) layout(*a);
       return 0;
-    case WM_DPICHANGED: {
-      a->scale = static_cast<float>(HIWORD(wp)) / 96.0f;
-      a->widget.set_dpi_scale(a->scale);
-      a->calendar.set_dpi_scale(a->scale);
-      a->mapw.set_dpi_scale(a->scale);
-      apply_list_font(*a);
-      const RECT* r = reinterpret_cast<const RECT*>(lp);
-      SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
-                   SWP_NOZORDER | SWP_NOACTIVATE);
-      layout(*a);
-      return 0;
-    }
-    case WM_PAINT:
-      paint(*a);
-      return 0;
-    case WM_ERASEBKGND:
-      return 1;
-    case WM_COMMAND: {
-      const int id = LOWORD(wp);
-      if (id == kListId && HIWORD(wp) == LBN_SELCHANGE) {
-        show_selection(*a);
-        return 0;
-      }
-      switch (id) {
-        case kIdmViewDay: set_mode(*a, Mode::kDay); break;
-        case kIdmViewTrends: set_mode(*a, Mode::kTrends); break;
-        case kIdmViewActivity: set_mode(*a, Mode::kActivity); break;
-        case kIdmViewHockey: set_mode(*a, Mode::kHockey); break;
-        case kIdmViewCalendar: set_mode(*a, Mode::kCalendar); break;
-        case kIdmViewMap: set_mode(*a, Mode::kMap); break;
-        case kIdmViewSki: set_mode(*a, Mode::kSki); break;
-        case kIdmViewCompare: set_mode(*a, Mode::kCompare); break;
-        case kIdmViewSleep: set_mode(*a, Mode::kSleep); break;
-        case kIdmFit: a->widget.fit_x(); InvalidateRect(hwnd, nullptr, FALSE); break;
-        case kIdmZoomIn:
-        case kIdmZoomOut: {
-          const RECT r = plot_rect(*a);
-          const float mid = static_cast<float>(r.left + r.right) / 2.0f;
-          a->widget.zoom_at(mid, id == kIdmZoomIn ? kKeyZoom : 1.0 / kKeyZoom);
-          InvalidateRect(hwnd, nullptr, FALSE);
-          break;
-        }
-        case kIdmReload: reload(*a); break;
-        case kIdmExit: DestroyWindow(hwnd); break;
-        default: break;
-      }
-      return 0;
-    }
-    case WM_MOUSEWHEEL: {
-      POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-      ScreenToClient(hwnd, &pt);
-      if (!in_plot(*a, pt.x, pt.y) || a->mode == Mode::kCalendar) break;
-      const int notches = GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
-      if (a->mode == Mode::kMap) {
-        a->mapw.zoom_step(static_cast<float>(pt.x), static_cast<float>(pt.y), notches > 0 ? 1 : -1);
-        InvalidateRect(hwnd, nullptr, FALSE);
-        return 0;
-      }
-      double factor = 1.0;
-      for (int i = 0; i < 10 && i < (notches < 0 ? -notches : notches); ++i) {
-        factor *= notches > 0 ? kWheelZoomPerNotch : 1.0 / kWheelZoomPerNotch;
-      }
-      a->widget.zoom_at(static_cast<float>(pt.x), factor);
-      InvalidateRect(hwnd, nullptr, FALSE);
-      return 0;
-    }
-    case WM_LBUTTONDOWN: {
-      const int x = GET_X_LPARAM(lp);
-      const int y = GET_Y_LPARAM(lp);
-      if (!in_plot(*a, x, y) || a->mode == Mode::kCalendar) break;
-      a->dragging = true;
-      a->moved_while_dragging = false;
-      a->drag_last_x = x;
-      a->drag_last_y = y;
-      SetCapture(hwnd);
-      SetFocus(hwnd);
-      return 0;
-    }
-    case WM_MOUSEMOVE: {
-      const int x = GET_X_LPARAM(lp);
-      const int y = GET_Y_LPARAM(lp);
-      if (!a->tracking_mouse) {
-        TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
-        TrackMouseEvent(&tme);
-        a->tracking_mouse = true;
-      }
-      if (a->dragging) {
-        const int dx = x - a->drag_last_x;
-        const int dy = y - a->drag_last_y;
-        if (dx != 0 || dy != 0) {
-          if (a->mode == Mode::kMap) {
-            a->mapw.pan_pixels(static_cast<float>(dx), static_cast<float>(dy));
-          } else if (dx != 0) {
-            a->widget.pan_pixels(static_cast<float>(dx));
-          }
-          a->drag_last_x = x;
-          a->drag_last_y = y;
-          a->moved_while_dragging = true;
-        }
-      }
-      a->widget.set_hover(static_cast<float>(x), static_cast<float>(y), in_plot(*a, x, y));
-      a->calendar.set_hover(static_cast<float>(x), static_cast<float>(y), in_plot(*a, x, y));
-      a->mapw.set_hover(static_cast<float>(x), static_cast<float>(y), in_plot(*a, x, y));
-      InvalidateRect(hwnd, nullptr, FALSE);
-      return 0;
-    }
+    case WM_DPICHANGED: on_dpi_changed(*a, hwnd, wp, lp); return 0;
+    case WM_PAINT: paint(*a); return 0;
+    case WM_ERASEBKGND: return 1;
+    case WM_COMMAND: on_command(*a, hwnd, wp); return 0;
+    case WM_MOUSEWHEEL:
+      if (on_mouse_wheel(*a, hwnd, wp, lp)) return 0;
+      break;
+    case WM_LBUTTONDOWN:
+      if (on_button_down(*a, hwnd, lp)) return 0;
+      break;
+    case WM_MOUSEMOVE: on_mouse_move(*a, hwnd, lp); return 0;
     case WM_LBUTTONUP:
       if (a->dragging) {
         a->dragging = false;
@@ -534,51 +594,15 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_MOUSELEAVE:
       a->tracking_mouse = false;
-      a->widget.set_hover(0.0f, 0.0f, false);
-      a->calendar.set_hover(0.0f, 0.0f, false);
-      a->mapw.set_hover(0.0f, 0.0f, false);
+      set_all_hover(*a, 0.0f, 0.0f, false);
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
-    case WM_KEYDOWN: {
-      const RECT r = plot_rect(*a);
-      const float w = static_cast<float>(r.right - r.left);
-      switch (wp) {
-        case VK_HOME:
-          if (a->mode == Mode::kMap) {
-            a->mapw.fit();
-          } else {
-            a->widget.fit_x();
-          }
-          break;
-        case VK_LEFT: a->widget.pan_pixels(w * kKeyPanFrac); break;
-        case VK_RIGHT: a->widget.pan_pixels(-w * kKeyPanFrac); break;
-        case VK_UP:
-        case VK_PRIOR: move_list_selection(*a, -1); return 0;
-        case VK_DOWN:
-        case VK_NEXT: move_list_selection(*a, 1); return 0;
-        case VK_ADD:
-        case VK_OEM_PLUS:
-          a->widget.zoom_at(static_cast<float>(r.left + r.right) / 2.0f, kKeyZoom);
-          break;
-        case VK_SUBTRACT:
-        case VK_OEM_MINUS:
-          a->widget.zoom_at(static_cast<float>(r.left + r.right) / 2.0f, 1.0 / kKeyZoom);
-          break;
-        case VK_F5: reload(*a); return 0;
-        case '1': set_mode(*a, Mode::kDay); return 0;
-        case '2': set_mode(*a, Mode::kTrends); return 0;
-        case '3': set_mode(*a, Mode::kActivity); return 0;
-        case '4': set_mode(*a, Mode::kHockey); return 0;
-        case '5': set_mode(*a, Mode::kCalendar); return 0;
-        case '6': set_mode(*a, Mode::kMap); return 0;
-        case '7': set_mode(*a, Mode::kSki); return 0;
-        case '8': set_mode(*a, Mode::kCompare); return 0;
-        case '9': set_mode(*a, Mode::kSleep); return 0;
-        default: return DefWindowProcW(hwnd, msg, wp, lp);
+    case WM_KEYDOWN:
+      if (on_key_down(*a, wp)) {
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
       }
-      InvalidateRect(hwnd, nullptr, FALSE);
-      return 0;
-    }
+      break;
     case kMsgTileReady:
       if (a->mode == Mode::kMap) InvalidateRect(hwnd, nullptr, FALSE);
       return 0;

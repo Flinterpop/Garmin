@@ -41,9 +41,109 @@ void load_xy(store::Db& db, const char* sql, int64_t t0, int64_t t1, Series& s) 
   }
 }
 
+std::string night_title(store::Db& db, const NightEntry& n) {
+  store::Stmt st(db,
+                 "SELECT deep_s, light_s, rem_s, awake_s, score FROM sleep WHERE date = ?");
+  G_REQUIRE_RET(st.ok(), "Sleep  " + n.date);
+  st.bind(1, n.date);
+  G_REQUIRE_RET(st.row(), "Sleep  " + n.date);
+  char buf[240] = {};
+  std::snprintf(buf, sizeof(buf),
+                "Sleep  %s    %s in bed   deep %lld  light %lld  rem %lld  awake %lld min",
+                n.date.c_str(),
+                plot::format_elapsed(static_cast<double>(n.end_ts - n.start_ts)).c_str(),
+                static_cast<long long>(st.col_int(0) / 60), static_cast<long long>(st.col_int(1) / 60),
+                static_cast<long long>(st.col_int(2) / 60), static_cast<long long>(st.col_int(3) / 60));
+  std::string title = buf;
+  if (!st.col_null(4)) title += "   score " + std::to_string(st.col_int(4));
+  return title;
+}
+
+// Hypnogram: stage bands plus a step trace (deep 0 .. awake 3).
+Panel stages_panel(store::Db& db, int64_t t0, int64_t t1) {
+  Panel p;
+  p.title = "Stages";
+  p.left.fixed = true;
+  p.left.min = -0.5;
+  p.left.max = 3.5;
+  struct StageDef {
+    const char* stage;
+    const char* name;
+    double level;
+    plot::Color color;
+  };
+  const StageDef stages[] = {{"deep", "Deep", 0.0, colors::kDeep},
+                             {"light", "Light", 1.0, colors::kLight},
+                             {"rem", "REM", 2.0, colors::kRem},
+                             {"awake", "Awake", 3.0, colors::kAwake}};
+  std::vector<std::pair<double, double>> timeline;  // (start, level)
+  for (const StageDef& sd : stages) {
+    Series band = make(sd.name, "", sd.color, Style::kBand);
+    store::Stmt st(db,
+                   "SELECT start_ts, end_ts FROM sleep_stage WHERE stage = ? AND source = 'api'"
+                   " AND end_ts >= ? AND start_ts <= ? ORDER BY start_ts");
+    G_REQUIRE_RET(st.ok(), p);
+    st.bind(1, std::string(sd.stage)).bind(2, t0).bind(3, t1);
+    for (size_t i = 0; i < kMaxSamples && st.row(); ++i) {
+      band.x.push_back(static_cast<double>(st.col_int(0)));
+      band.x2.push_back(static_cast<double>(st.col_int(1)));
+      band.y.push_back(0.0);
+      timeline.emplace_back(static_cast<double>(st.col_int(0)), sd.level);
+    }
+    if (!band.x.empty()) p.series.push_back(std::move(band));
+    p.hlines.push_back(plot::HLine{sd.level, sd.name, plot::rgb(0x888888), YAxisSide::kLeft});
+  }
+  std::sort(timeline.begin(), timeline.end());
+  Series step = make("Stage", "", plot::rgb(0x333333), Style::kStep);
+  for (const auto& [x, level] : timeline) {
+    step.x.push_back(x);
+    step.y.push_back(level);
+  }
+  if (!step.x.empty()) p.series.push_back(std::move(step));
+  p.weight = 0.9f;
+  return p;
+}
+
+Panel heart_panel(store::Db& db, int64_t t0, int64_t t1) {
+  Panel p;
+  p.title = "Heart rate / HRV";
+  Series hr = make("HR", "bpm", colors::kHeartRate, Style::kLine);
+  load_xy(db, "SELECT ts, bpm FROM hr_sample WHERE source='fit' AND ts BETWEEN ? AND ? ORDER BY ts",
+          t0, t1, hr);
+  if (hr.x.empty()) {
+    load_xy(db, "SELECT ts, bpm FROM hr_sample WHERE source='api' AND ts BETWEEN ? AND ? ORDER BY ts",
+            t0, t1, hr);
+  }
+  Series hrv = make("HRV", "ms", colors::kHrv, Style::kPoints, YAxisSide::kRight);
+  load_xy(db, "SELECT ts, rmssd_ms FROM hrv_sample WHERE ts BETWEEN ? AND ? ORDER BY ts", t0, t1, hrv);
+  p.series.push_back(std::move(hr));
+  if (!hrv.x.empty()) p.series.push_back(std::move(hrv));
+  p.weight = 1.2f;
+  return p;
+}
+
+// Returns false when the night has none of these signals.
+bool breathing_panel(store::Db& db, int64_t t0, int64_t t1, Panel& p) {
+  p.title = "Respiration / SpO2 / Stress";
+  Series resp = make("Respiration", "brpm", colors::kRespiration, Style::kLine);
+  load_xy(db, "SELECT ts, brpm FROM respiration_sample WHERE ts BETWEEN ? AND ? ORDER BY ts", t0, t1,
+          resp);
+  Series spo2 = make("SpO2", "%", colors::kBodyBattery, Style::kPoints, YAxisSide::kRight);
+  load_xy(db, "SELECT ts, pct FROM spo2_sample WHERE ts BETWEEN ? AND ? ORDER BY ts", t0, t1, spo2);
+  Series stress = make("Stress", "", colors::kStress, Style::kStep, YAxisSide::kRight);
+  load_xy(db,
+          "SELECT ts, level FROM stress_sample WHERE source='fit' AND ts BETWEEN ? AND ? ORDER BY ts",
+          t0, t1, stress);
+  if (!resp.x.empty()) p.series.push_back(std::move(resp));
+  if (!spo2.x.empty()) p.series.push_back(std::move(spo2));
+  if (!stress.x.empty()) p.series.push_back(std::move(stress));
+  return !p.series.empty();
+}
+
 }  // namespace
 
 std::vector<NightEntry> list_nights(store::Db& db) {
+  G_ASSERT(db.is_open());
   std::vector<NightEntry> out;
   store::Stmt st(db,
                  "SELECT date, start_ts, end_ts, score, deep_s, light_s, rem_s FROM sleep"
@@ -66,6 +166,8 @@ std::vector<NightEntry> list_nights(store::Db& db) {
 }
 
 Figure load_night(store::Db& db, const NightEntry& n) {
+  G_ASSERT(db.is_open());
+  G_ASSERT(n.end_ts >= n.start_ts);
   Figure fig;
   fig.xmode = plot::XMode::kTime;
   const int64_t t0 = n.start_ts - kMargin;
@@ -73,105 +175,11 @@ Figure load_night(store::Db& db, const NightEntry& n) {
   fig.extend_x = true;
   fig.extend_x_min = static_cast<double>(t0);
   fig.extend_x_max = static_cast<double>(t1);
-
-  // Summary line from the sleep row.
-  {
-    store::Stmt st(db,
-                   "SELECT deep_s, light_s, rem_s, awake_s, score, avg_spo2, avg_resp, avg_hrv"
-                   " FROM sleep WHERE date = ?");
-    if (st.ok()) {
-      st.bind(1, n.date);
-      if (st.row()) {
-        char buf[240] = {};
-        std::snprintf(buf, sizeof(buf),
-                      "Sleep  %s    %s in bed   deep %lld  light %lld  rem %lld  awake %lld min",
-                      n.date.c_str(), plot::format_elapsed(static_cast<double>(n.end_ts - n.start_ts)).c_str(),
-                      static_cast<long long>(st.col_int(0) / 60), static_cast<long long>(st.col_int(1) / 60),
-                      static_cast<long long>(st.col_int(2) / 60), static_cast<long long>(st.col_int(3) / 60));
-        fig.title = buf;
-        if (!st.col_null(4)) fig.title += "   score " + std::to_string(st.col_int(4));
-      }
-    }
-  }
-  if (fig.title.empty()) fig.title = "Sleep  " + n.date;
-
-  // Hypnogram: stages as bands plus a step trace (deep 0 .. awake 3).
-  {
-    Panel p;
-    p.title = "Stages";
-    p.left.fixed = true;
-    p.left.min = -0.5;
-    p.left.max = 3.5;
-    struct StageDef {
-      const char* stage;
-      const char* name;
-      double level;
-      plot::Color color;
-    };
-    const StageDef stages[] = {{"deep", "Deep", 0.0, colors::kDeep},
-                               {"light", "Light", 1.0, colors::kLight},
-                               {"rem", "REM", 2.0, colors::kRem},
-                               {"awake", "Awake", 3.0, colors::kAwake}};
-    Series step = make("Stage", "", plot::rgb(0x333333), Style::kStep);
-    std::vector<std::pair<double, double>> timeline;  // (start, level)
-    for (const StageDef& sd : stages) {
-      Series band = make(sd.name, "", sd.color, Style::kBand);
-      store::Stmt st(db,
-                     "SELECT start_ts, end_ts FROM sleep_stage WHERE stage = ? AND source = 'api'"
-                     " AND end_ts >= ? AND start_ts <= ? ORDER BY start_ts");
-      if (!st.ok()) continue;
-      st.bind(1, std::string(sd.stage)).bind(2, t0).bind(3, t1);
-      for (size_t i = 0; i < kMaxSamples && st.row(); ++i) {
-        band.x.push_back(static_cast<double>(st.col_int(0)));
-        band.x2.push_back(static_cast<double>(st.col_int(1)));
-        band.y.push_back(0.0);
-        timeline.emplace_back(static_cast<double>(st.col_int(0)), sd.level);
-      }
-      if (!band.x.empty()) p.series.push_back(std::move(band));
-      p.hlines.push_back(plot::HLine{sd.level, sd.name, plot::rgb(0x888888), YAxisSide::kLeft});
-    }
-    std::sort(timeline.begin(), timeline.end());
-    for (const auto& [x, level] : timeline) {
-      step.x.push_back(x);
-      step.y.push_back(level);
-    }
-    if (!step.x.empty()) p.series.push_back(std::move(step));
-    p.weight = 0.9f;
-    fig.panels.push_back(std::move(p));
-  }
-  {
-    Panel p;
-    p.title = "Heart rate / HRV";
-    Series hr = make("HR", "bpm", colors::kHeartRate, Style::kLine);
-    load_xy(db, "SELECT ts, bpm FROM hr_sample WHERE source='fit' AND ts BETWEEN ? AND ? ORDER BY ts",
-            t0, t1, hr);
-    if (hr.x.empty()) {
-      load_xy(db, "SELECT ts, bpm FROM hr_sample WHERE source='api' AND ts BETWEEN ? AND ? ORDER BY ts",
-              t0, t1, hr);
-    }
-    Series hrv = make("HRV", "ms", colors::kHrv, Style::kPoints, YAxisSide::kRight);
-    load_xy(db, "SELECT ts, rmssd_ms FROM hrv_sample WHERE ts BETWEEN ? AND ? ORDER BY ts", t0, t1, hrv);
-    p.series.push_back(std::move(hr));
-    if (!hrv.x.empty()) p.series.push_back(std::move(hrv));
-    p.weight = 1.2f;
-    fig.panels.push_back(std::move(p));
-  }
-  {
-    Panel p;
-    p.title = "Respiration / SpO2 / Stress";
-    Series resp = make("Respiration", "brpm", colors::kRespiration, Style::kLine);
-    load_xy(db, "SELECT ts, brpm FROM respiration_sample WHERE ts BETWEEN ? AND ? ORDER BY ts", t0,
-            t1, resp);
-    Series spo2 = make("SpO2", "%", colors::kBodyBattery, Style::kPoints, YAxisSide::kRight);
-    load_xy(db, "SELECT ts, pct FROM spo2_sample WHERE ts BETWEEN ? AND ? ORDER BY ts", t0, t1, spo2);
-    Series stress = make("Stress", "", colors::kStress, Style::kStep, YAxisSide::kRight);
-    load_xy(db, "SELECT ts, level FROM stress_sample WHERE source='fit' AND ts BETWEEN ? AND ? ORDER BY ts",
-            t0, t1, stress);
-    if (!resp.x.empty()) p.series.push_back(std::move(resp));
-    if (!spo2.x.empty()) p.series.push_back(std::move(spo2));
-    if (!stress.x.empty()) p.series.push_back(std::move(stress));
-    if (!p.series.empty()) fig.panels.push_back(std::move(p));
-  }
+  fig.title = night_title(db, n);
+  fig.panels.push_back(stages_panel(db, t0, t1));
+  fig.panels.push_back(heart_panel(db, t0, t1));
+  Panel breathing;
+  if (breathing_panel(db, t0, t1, breathing)) fig.panels.push_back(std::move(breathing));
   fig.markers.push_back(plot::Marker{static_cast<double>(n.start_ts), "asleep"});
   fig.markers.push_back(plot::Marker{static_cast<double>(n.end_ts), ""});
   return fig;

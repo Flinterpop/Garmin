@@ -1,6 +1,14 @@
 # Garmin
 
+[![Release][release-badge]][release-latest] [![License: MIT][license-badge]](LICENSE)
+
+[release-badge]: https://img.shields.io/badge/release-v0.1.0-blue
+[release-latest]: https://github.com/Flinterpop/Garmin/releases/latest
+[license-badge]: https://img.shields.io/badge/license-MIT-green
+
 *Last updated: 18 Sep 2026*
+
+<img src="docs/icon-256.png" alt="app icon" width="96" align="right" />
 
 Local, C++/Win32 tooling for pulling health data off Garmin devices and out of Garmin Connect, and keeping it in a SQLite database shaped for plotting. No Python, no cloud service of our own: everything runs on this machine and talks only to Garmin.
 
@@ -8,7 +16,7 @@ Three executables:
 
 - **`gsync`** — signs in to Garmin Connect the way the mobile app does, pulls daily summaries, heart rate, sleep, stress / Body Battery, HRV, body composition (the Index scale), the activity list, per-activity FIT files and the daily wellness (monitoring) FIT files, and imports it all into `garmin.db`. Also imports FIT files copied straight off a watch over USB.
 - **`fitdump`** — inspects a single FIT file: summary, per-message counts, session line, and optional full dump to stdout or a long-format CSV.
-- **`gview`** — Win32 + Direct2D viewer over `garmin.db` with five views: **Day** (heart rate, stress, Body Battery, sleep stages, respiration, HRV on one time axis), **Trends** (resting HR, HRV, sleep hours and score, weight in lb, steps over 30 days to everything), **Activity** (HR, speed, altitude, cadence, power, temperature against elapsed time, laps as markers), **Hockey** (per-game shift detection from the HR trace with on-ice bands, HR zones, shift lengths and peak HR, plus a season overview across every game) **Calendar** (month grid with steps, resting HR, Body Battery range, sleep score and the day's activities) and **Map** (GPS activities on OpenStreetMap tiles, track coloured by heart rate, start/finish/lap markers, scale bar, hover readout of time, distance, HR, pace and altitude). Wheel zooms, drag pans, hover shows every value at the cursor.
+- **`gview`** — Win32 + Direct2D viewer over `garmin.db` with five views: **Day** (heart rate, stress, Body Battery, sleep stages, respiration, HRV on one time axis), **Trends** (resting HR, HRV, sleep hours and score, weight in lb, steps over 30 days to everything), **Activity** (HR, speed, altitude, cadence, power, temperature against elapsed time, laps as markers), **Hockey** (per-game shift detection from the HR trace with on-ice bands, HR zones, shift lengths and peak HR, plus a season overview across every game) **Calendar** (month grid with steps, resting HR, Body Battery range, sleep score and the day's activities), **Map** (GPS activities on OpenStreetMap tiles, track coloured by heart rate, start/finish/lap markers, scale bar, hover readout), **Ski** (runs and lifts detected from the altitude profile: per-run vertical, top speed and HR, plus a season overview), **Compare** (Ctrl-click two activities to overlay HR, speed, altitude and cadence) and **Sleep** (one night: hypnogram, HR/HRV, respiration/SpO2/stress). Wheel zooms, drag pans, hover shows every value at the cursor. Trends carry a trailing 30-day mean ± 1 σ band for resting HR, HRV and sleep hours with days beyond 2 σ flagged, and a blood-pressure panel when Omron CSV exports are present.
 
 ## Status
 
@@ -20,6 +28,7 @@ Three executables:
 | Plot viewer (`src/plot`, `apps/gview`) | Done; own Direct2D plot engine, five views, verified on the live database |
 | Hockey analysis (`src/analysis`) | Done; shift detection tuned on real games |
 | Map (`src/map`) | Done; OSM tiles + HR-coloured tracks, verified on runs and ski days |
+| Ski analysis, Compare, Sleep, baselines, blood pressure | Done |
 
 Notes:
 
@@ -49,6 +58,8 @@ gsync sync --days 30            # daily data + wellness FIT + activities for the
 gsync sync --from 2026-01-01 --to 2026-03-31 --activities 200
 gsync import <staging>\Activity <staging>\Monitor       # files copied off the watch (see below)
 gsync stats
+gsync import-bp                 # Omron blood-pressure CSVs from Downloads (also runs during sync)
+gsync sync --days 3 --log %LOCALAPPDATA%\GarminSync\sync.log   # what the nightly task runs
 gsync get /usersummary-service/usersummary/daily/<displayName>?calendarDate=2026-09-17
 
 fitdump some.fit                # summary
@@ -58,11 +69,26 @@ fitdump some.fit --csv out.csv  # mesg,timestamp,field,value,units
 gview                           # opens the default database; --data <dir> for another
 ```
 
-`gview` keys: `1` – `6` switch Day / Trends / Activity / Hockey / Calendar / Map, `Up` / `Down` step through the list, mouse wheel zooms around the cursor, drag pans, `Home` fits, `+` / `-` zoom, `F5` reloads after a sync.
+`gview` keys: `1` – `9` switch Day / Trends / Activity / Hockey / Calendar / Map / Ski / Compare / Sleep, `Up` / `Down` step through the list, mouse wheel zooms around the cursor, drag pans, `Home` fits, `+` / `-` zoom, `F5` reloads after a sync.
 
 Hockey shifts are detected from the smoothed HR trace: each rising leg (with 12 bpm hysteresis) whose peak clears the game's median HR is a shift, since HR climbs on the ice and falls on the bench. Zones are 60/70/80/90 % of a robust HR max (95th percentile of per-game maxima). Both live in `src/analysis/hockey.cpp` and are unit-tested on a synthetic game.
 
 Options: `--data <dir>` (default `%LOCALAPPDATA%\GarminSync\data`), `--no-fit`, `--force`, `--out <file>`.
+
+### Keeping it current
+
+A Windows Task Scheduler job named `GarminSync` runs `gsync sync --days 3 --log ...\sync.log` daily at 06:00 when you are logged on, catching up if the machine was off and skipping when offline. Register it with:
+
+```powershell
+$exe = 'C:\source_games\Garmin\build\apps\Release\gsync.exe'; $log = "$env:LOCALAPPDATA\GarminSync\sync.log"
+$action   = New-ScheduledTaskAction -Execute $exe -Argument "sync --days 3 --log `"$log`"" -WorkingDirectory "$env:LOCALAPPDATA\GarminSync"
+$trigger  = New-ScheduledTaskTrigger -Daily -At 06:00
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RunOnlyIfNetworkAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 45) -MultipleInstances IgnoreNew
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName 'GarminSync' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force
+```
+
+The OAuth1 token lasts about a year; when it expires the log shows "not logged in" and one `gsync login` fixes it.
 
 ### Getting files off the watch
 
@@ -108,6 +134,7 @@ All timestamps are Unix seconds (UTC). `source` distinguishes `api` (Garmin Conn
 | `respiration_sample`, `spo2_sample` | sample | from wellness FIT |
 | `hrv_daily`, `hrv_sample` | night / 5 min | RMSSD summary and readings |
 | `weight` | measurement | Index scale: weight, BMI, body fat/water %, bone/muscle mass, visceral fat, metabolic age |
+| `blood_pressure` | reading | Omron cuff exports: systolic, diastolic, pulse, cuff user slot, device |
 | `activity` | activity | Connect summary; `fit_file_id` links to the decoded FIT |
 | `activity_session`, `activity_lap`, `activity_record`, `activity_hrv` | per FIT file | 1 Hz records (position, altitude, HR, cadence, speed, power, temperature), laps, R-R intervals |
 | `fit_file` | file | provenance: path, type, device, time created |
@@ -121,11 +148,13 @@ src/fit     fit_types.h (protocol constants), fit_crc, fit_profile (message/fiel
 src/gc      http_client (WinHTTP), oauth1 (RFC 5849 signing), token_store (DPAPI), gc_client (SSO login + endpoints)
 src/store   db (SQLite wrapper + schema), importer (JSON and FIT -> rows)
 src/plot    plot_types (Figure/Panel/Series model), ticks (nice numbers, local-time and elapsed axes), decimate (min/max per pixel column), plot_widget (Direct2D rendering, zoom/pan/hover), calendar_widget (month grid)
-src/analysis hockey (shift detection, HR zones, per-game stats)
+src/analysis hockey (shift detection, HR zones, per-game stats), ski (run/lift detection, per-run and per-day stats)
 src/map     mercator (Web Mercator + tile maths), tile_cache (OSM download thread + disk cache), map_widget (Direct2D map)
 apps        fitdump, gsync, gview (Win32 window; queries*.cpp build Figures / MonthData from garmin.db)
 tests       Catch2: CRC, decoder (synthetic FIT files), OAuth1 (RFC test vectors), zip, time
 ```
+
+Licensed under the [MIT License](LICENSE).
 
 The plot engine is plain Win32: Direct2D + DirectWrite from the Windows SDK, no third-party UI library. Series are decimated to the min/max per pixel column before drawing, so a day of 1 Hz data or a multi-hour activity redraws instantly while dragging. Tick generation and decimation are pure functions with unit tests.
 
@@ -133,7 +162,7 @@ The FIT decoder is written from the protocol specification rather than wrapping 
 
 ## Next steps
 
-1. Backfill: `gsync sync --from 2022-12-01 --activities 500`.
-2. Viewer: comparing two activities or games, exporting a panel to PNG, a nightly scheduled `gsync sync --days 3`.
+1. Live chest-strap HR over BLE (WinRT GATT heart-rate service) for treadmill and trainer sessions.
+2. Export the current view to PNG; auto-reload when the database changes.
 3. Read the watch over MTP from `gsync` directly (Windows Portable Devices API) instead of the PowerShell copy step.
-4. Live chest-strap HR over BLE (WinRT `GattCharacteristic`), writing to `hr_sample` with `source='ble'`.
+4. Backfill the years before 2024 (`gsync sync --from 2022-12-01`).

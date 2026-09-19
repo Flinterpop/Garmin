@@ -33,3 +33,12 @@ add_library(gstore STATIC
   store/importer.h store/importer.cpp)
 target_include_directories(gstore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(gstore PUBLIC gutil fitlib nlohmann_json::nlohmann_json unofficial::sqlite3::sqlite3)
+
+# plot: Direct2D plotting engine (model, ticks, decimation, widget)
+add_library(plotlib STATIC
+  plot/plot_types.h plot/plot_types.cpp
+  plot/ticks.h plot/ticks.cpp
+  plot/decimate.h plot/decimate.cpp
+  plot/plot_widget.h plot/plot_widget.cpp)
+target_include_directories(plotlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(plotlib PUBLIC gutil d2d1 dwrite)

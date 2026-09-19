@@ -4,10 +4,11 @@
 
 Local, C++/Win32 tooling for pulling health data off Garmin devices and out of Garmin Connect, and keeping it in a SQLite database shaped for plotting. No Python, no cloud service of our own: everything runs on this machine and talks only to Garmin.
 
-Two executables:
+Three executables:
 
 - **`gsync`** — signs in to Garmin Connect the way the mobile app does, pulls daily summaries, heart rate, sleep, stress / Body Battery, HRV, body composition (the Index scale), the activity list, per-activity FIT files and the daily wellness (monitoring) FIT files, and imports it all into `garmin.db`. Also imports FIT files copied straight off a watch over USB.
 - **`fitdump`** — inspects a single FIT file: summary, per-message counts, session line, and optional full dump to stdout or a long-format CSV.
+- **`gview`** — Win32 + Direct2D viewer over `garmin.db`: a Day view (heart rate, stress, Body Battery, sleep stages, respiration, HRV on one time axis), a Trends view (resting HR, HRV, sleep hours and score, weight, steps over 30 days to everything) and an Activity view (HR, speed, altitude, cadence, power, temperature against elapsed time, laps as markers). Wheel zooms, drag pans, hover shows every value at the cursor.
 
 ## Status
 
@@ -16,7 +17,7 @@ Two executables:
 | FIT decoder (`src/fit`) | Done; verified against Garmin-native and Zwift activity files, 10 unit tests |
 | Garmin Connect login + endpoints (`src/gc`) | Done; verified against a live account (login with MFA, all daily endpoints, weight, activities, wellness FIT zips) |
 | SQLite store + importers (`src/store`) | Done; verified on live JSON and on 208 files copied off a fenix 7 |
-| Plots | Not started (see Next steps) |
+| Plot viewer (`src/plot`, `apps/gview`) | Done; own Direct2D plot engine, verified on the live database |
 
 Notes:
 
@@ -49,7 +50,11 @@ gsync get /usersummary-service/usersummary/daily/<displayName>?calendarDate=2026
 fitdump some.fit                # summary
 fitdump some.fit --print        # every message
 fitdump some.fit --csv out.csv  # mesg,timestamp,field,value,units
+
+gview                           # opens the default database; --data <dir> for another
 ```
+
+`gview` keys: `1` / `2` / `3` switch Day / Trends / Activity, `Up` / `Down` step through the list, mouse wheel zooms around the cursor, drag pans, `Home` fits, `+` / `-` zoom, `F5` reloads after a sync.
 
 Options: `--data <dir>` (default `%LOCALAPPDATA%\GarminSync\data`), `--no-fit`, `--force`, `--out <file>`.
 
@@ -109,15 +114,18 @@ src/util    assertions, time (FIT epoch), CNG/DPAPI/base64/percent-encoding, zip
 src/fit     fit_types.h (protocol constants), fit_crc, fit_profile (message/field names + scaling), fit_decoder
 src/gc      http_client (WinHTTP), oauth1 (RFC 5849 signing), token_store (DPAPI), gc_client (SSO login + endpoints)
 src/store   db (SQLite wrapper + schema), importer (JSON and FIT -> rows)
-apps        fitdump, gsync
+src/plot    plot_types (Figure/Panel/Series model), ticks (nice numbers, local-time and elapsed axes), decimate (min/max per pixel column), plot_widget (Direct2D rendering, zoom/pan/hover)
+apps        fitdump, gsync, gview (Win32 window + queries that build Figures from garmin.db)
 tests       Catch2: CRC, decoder (synthetic FIT files), OAuth1 (RFC test vectors), zip, time
 ```
+
+The plot engine is plain Win32: Direct2D + DirectWrite from the Windows SDK, no third-party UI library. Series are decimated to the min/max per pixel column before drawing, so a day of 1 Hz data or a multi-hour activity redraws instantly while dragging. Tick generation and decimation are pure functions with unit tests.
 
 The FIT decoder is written from the protocol specification rather than wrapping Garmin's SDK: fixed-size state (16 local definitions), no heap use per message, compressed-timestamp and `timestamp_16` expansion, developer fields resolved through `field_description`, chained files, CRC verification. Messages not in the built-in profile subset still decode; they are just reported by number.
 
 ## Next steps
 
 1. Backfill: `gsync sync --from 2022-12-01 --activities 500`.
-2. Plots: a Win32 viewer over `garmin.db`. Preferred route is Dear ImGui + ImPlot on a D3D11/Win32 backend (both in vcpkg), which gives zoomable time-series, overlays of HR/stress/Body Battery per day, weight trend, and per-activity traces with little code.
+2. Viewer: a week/month "calendar" view, activity map from the GPS records, comparing two activities, printing/exporting a panel to PNG.
 3. Read the watch over MTP from `gsync` directly (Windows Portable Devices API) instead of the PowerShell copy step.
 4. Live chest-strap HR over BLE (WinRT `GattCharacteristic`), writing to `hr_sample` with `source='ble'`.

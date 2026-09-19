@@ -18,3 +18,6 @@
   do {                                                                        \
     if (!(cond)) return (ret);                                                \
   } while (0)
+
+// Same for void functions.
+#define G_REQUIRE_VOID(cond)                                                    do {                                                                            if (!(cond)) return;                                                        } while (0)

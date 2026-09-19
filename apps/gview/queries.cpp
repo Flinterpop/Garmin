@@ -451,11 +451,13 @@ Figure load_trends(store::Db& db, int days) {
     hrv.gap_break = 4.0 * kDay;
     load_daily("SELECT date, last_night_avg FROM hrv_daily WHERE date BETWEEN ? AND ? ORDER BY date",
                hrv, 43200.0);
-    add_baseline(p, rhr, 30, YAxisSide::kLeft);
+    const Series rhr_copy = rhr;
     p.series.push_back(std::move(rhr));
+    add_baseline(p, rhr_copy, 30, YAxisSide::kLeft);
     if (!hrv.x.empty()) {
-      add_baseline(p, hrv, 30, YAxisSide::kRight);
+      const Series hrv_copy = hrv;
       p.series.push_back(std::move(hrv));
+      add_baseline(p, hrv_copy, 30, YAxisSide::kRight);
     }
     fig.panels.push_back(std::move(p));
   }
@@ -479,9 +481,9 @@ Figure load_trends(store::Db& db, int days) {
     Series hours_pts = hours;
     for (double& x : hours_pts.x) x += 43200.0;
     hours_pts.name = "Sleep";
-    add_baseline(p, hours_pts, 30, YAxisSide::kLeft);
     p.series.push_back(std::move(hours));
     if (!score.x.empty()) p.series.push_back(std::move(score));
+    add_baseline(p, hours_pts, 30, YAxisSide::kLeft);
     fig.panels.push_back(std::move(p));
   }
   {

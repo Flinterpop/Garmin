@@ -134,7 +134,7 @@ All timestamps are Unix seconds (UTC). `source` distinguishes `api` (Garmin Conn
 | `respiration_sample`, `spo2_sample` | sample | from wellness FIT |
 | `hrv_daily`, `hrv_sample` | night / 5 min | RMSSD summary and readings |
 | `weight` | measurement | Index scale: weight, BMI, body fat/water %, bone/muscle mass, visceral fat, metabolic age |
-| `blood_pressure` | reading | Omron cuff exports: systolic, diastolic, pulse, cuff user slot, device |
+| `blood_pressure` | reading | Omron cuff readings from [OmronBP](https://github.com/Flinterpop/OmronBP) CSV exports (`readings_*.csv` in Downloads): systolic, diastolic, pulse, cuff user slot, device |
 | `activity` | activity | Connect summary; `fit_file_id` links to the decoded FIT |
 | `activity_session`, `activity_lap`, `activity_record`, `activity_hrv` | per FIT file | 1 Hz records (position, altitude, HR, cadence, speed, power, temperature), laps, R-R intervals |
 | `fit_file` | file | provenance: path, type, device, time created |

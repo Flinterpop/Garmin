@@ -332,13 +332,13 @@ int import_bp_downloads(store::Db& db, int64_t& rows) {
     store::ImportCounts c;
     std::string err;
     if (!gutil::read_text_file(entry.path(), text) || !store::import_bp_csv(db, text, c, err)) {
-      std::fprintf(stderr, "  blood pressure %s: %s' + chr(92) + 'n", name.c_str(), err.c_str());
+      std::fprintf(stderr, "  blood pressure %s: %s\n", name.c_str(), err.c_str());
       ++failures;
       continue;
     }
     rows += c.rows;
     if (c.rows > 0) {
-      std::printf("  %-10s %s  %lld new readings' + chr(92) + 'n", "bp", name.c_str(),
+      std::printf("  %-10s %s  %lld new readings\n", "bp", name.c_str(),
                   static_cast<long long>(c.rows));
     }
   }
@@ -593,15 +593,15 @@ int run_import_bp(const Options& o) {
       store::ImportCounts c;
       std::string err;
       if (!gutil::read_text_file(a, text) || !store::import_bp_csv(db, text, c, err)) {
-        std::fprintf(stderr, "  %s: %s' + chr(92) + 'n", a.c_str(), err.empty() ? "cannot read" : err.c_str());
+        std::fprintf(stderr, "  %s: %s\n", a.c_str(), err.empty() ? "cannot read" : err.c_str());
         ++failures;
         continue;
       }
       rows += c.rows;
-      std::printf("  %s  %lld new readings' + chr(92) + 'n", a.c_str(), static_cast<long long>(c.rows));
+      std::printf("  %s  %lld new readings\n", a.c_str(), static_cast<long long>(c.rows));
     }
   }
-  std::printf("imported %lld blood pressure readings, %d failures' + chr(92) + 'n",
+  std::printf("imported %lld blood pressure readings, %d failures\n",
               static_cast<long long>(rows), failures);
   return failures == 0 ? 0 : 1;
 }

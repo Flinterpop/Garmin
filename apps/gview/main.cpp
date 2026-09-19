@@ -19,6 +19,7 @@
 #include "plot/calendar_widget.h"
 #include "plot/plot_widget.h"
 #include "queries.h"
+#include "resource.h"
 #include "store/db.h"
 #include "util/assert.h"
 #include "util/file_util.h"
@@ -647,7 +648,8 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show) {
   wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   wc.hbrBackground = nullptr;
   wc.lpszClassName = kClassName;
-  wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+  wc.hIcon = LoadIconW(hinst, MAKEINTRESOURCEW(IDI_APP));
+  wc.hIconSm = wc.hIcon;
   G_REQUIRE_RET(RegisterClassExW(&wc) != 0, 3);
 
   const HWND hwnd = CreateWindowExW(0, kClassName, L"Garmin viewer", WS_OVERLAPPEDWINDOW,

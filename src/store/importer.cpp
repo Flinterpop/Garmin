@@ -1,5 +1,8 @@
 #include "store/importer.h"
 
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <memory>
 #include <optional>
 
@@ -745,6 +748,97 @@ bool import_fit(Db& db, const std::string& path, const std::vector<uint8_t>& byt
     Stmt link(db, "UPDATE activity SET fit_file_id=? WHERE id=?");
     if (!stmt_ready(link, db, err)) return false;
     if (!link.bind(1, file_id).bind(2, activity_id).run(err)) return false;
+  }
+  return txn.commit(err);
+}
+
+// ---------------------------------------------------------- blood pressure
+
+namespace {
+
+// Splits one CSV line on commas (the Omron export has no quoting).
+std::vector<std::string> split_csv(const std::string& line) {
+  std::vector<std::string> out;
+  std::string cur;
+  for (const char ch : line) {
+    if (ch == ',') {
+      out.push_back(cur);
+      cur.clear();
+    } else if (ch != '\r') {
+      cur.push_back(ch);
+    }
+  }
+  out.push_back(cur);
+  return out;
+}
+
+// "YYYY-MM-DD HH:MM:SS" in local time -> Unix seconds.
+bool parse_local_datetime(const std::string& s, int64_t& out) {
+  int y = 0, mo = 0, d = 0, h = 0, mi = 0, sec = 0;
+  G_REQUIRE_RET(s.size() >= 19, false);
+  G_REQUIRE_RET(std::sscanf(s.c_str(), "%4d-%2d-%2d %2d:%2d:%2d", &y, &mo, &d, &h, &mi, &sec) == 6,
+                false);
+  std::tm tm{};
+  tm.tm_year = y - 1900;
+  tm.tm_mon = mo - 1;
+  tm.tm_mday = d;
+  tm.tm_hour = h;
+  tm.tm_min = mi;
+  tm.tm_sec = sec;
+  tm.tm_isdst = -1;
+  const time_t t = mktime(&tm);
+  G_REQUIRE_RET(t != static_cast<time_t>(-1), false);
+  out = static_cast<int64_t>(t);
+  return true;
+}
+
+int64_t to_int(const std::string& s) { return std::atoll(s.c_str()); }
+
+}  // namespace
+
+bool import_bp_csv(Db& db, const std::string& csv_text, ImportCounts& c, std::string& err) {
+  constexpr size_t kMaxLines = 200000;
+  Txn txn(db);
+  if (!txn.begin(err)) return false;
+  Stmt s(db,
+         "INSERT OR IGNORE INTO blood_pressure(ts, cuff_user, systolic, diastolic, pulse, model,"
+         " device, movement, irregular) VALUES(?,?,?,?,?,?,?,?,?)");
+  if (!stmt_ready(s, db, err)) return false;
+
+  std::vector<std::string> header;
+  size_t pos = 0;
+  for (size_t line_no = 0; line_no < kMaxLines && pos < csv_text.size(); ++line_no) {
+    size_t end = csv_text.find('\n', pos);
+    if (end == std::string::npos) end = csv_text.size();
+    const std::string line = csv_text.substr(pos, end - pos);
+    pos = end + 1;
+    if (line.empty() || line == "\r") continue;
+    const std::vector<std::string> f = split_csv(line);
+    if (header.empty()) {
+      header = f;
+      if (header.size() < 7 || header[0] != "timestamp" || header[4] != "systolic") {
+        err = "blood pressure csv: unexpected header";
+        return false;
+      }
+      continue;
+    }
+    if (f.size() < 7) continue;
+    int64_t ts = 0;
+    if (!parse_local_datetime(f[0], ts)) continue;
+    const int64_t sys = to_int(f[4]);
+    const int64_t dia = to_int(f[5]);
+    if (sys < 50 || sys > 300 || dia < 30 || dia > 200) continue;
+    s.bind(1, ts)
+        .bind(2, to_int(f[3]))
+        .bind(3, sys)
+        .bind(4, dia)
+        .bind(5, f[6].empty() ? std::optional<int64_t>() : std::optional<int64_t>(to_int(f[6])))
+        .bind(6, f[1])
+        .bind(7, f[2])
+        .bind(8, f.size() > 7 ? std::optional<int64_t>(to_int(f[7])) : std::optional<int64_t>())
+        .bind(9, f.size() > 8 ? std::optional<int64_t>(to_int(f[8])) : std::optional<int64_t>());
+    if (!s.run(err)) return false;
+    c.rows += db.changes();
   }
   return txn.commit(err);
 }

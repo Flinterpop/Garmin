@@ -35,6 +35,11 @@ bool import_activity_list(Db& db, const nlohmann::json& j, ImportCounts& c, std:
 bool import_fit(Db& db, const std::string& path, const std::vector<uint8_t>& bytes,
                 int64_t activity_id, bool force, ImportCounts& c, std::string& err);
 
+// Blood-pressure CSV as exported by the Omron connect app:
+// timestamp,model,device,user,systolic,diastolic,pulse,movement,irregular_heartbeat
+// Timestamps are local time. Re-importing the same file is a no-op.
+bool import_bp_csv(Db& db, const std::string& csv_text, ImportCounts& c, std::string& err);
+
 // sync_log bookkeeping so a re-run can skip fetched days.
 bool sync_done(Db& db, const std::string& kind, const std::string& key);
 bool mark_sync(Db& db, const std::string& kind, const std::string& key, bool ok,

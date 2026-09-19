@@ -1,6 +1,7 @@
 #include "commands.h"
 
 #include <windows.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <cctype>
@@ -43,6 +44,7 @@ void usage_text() {
       "  import <path>...      import FIT files or directories (e.g. from the watch USB)\n"
       "  get <api-path>        raw authenticated GET, prints JSON (debugging)\n"
       "  stats                 row counts in the local database\n"
+      "  import-bp <csv>...    import Omron blood-pressure CSV exports\n"
       "options:\n"
       "  --data <dir>          data directory (default %LOCALAPPDATA%\\GarminSync\\data)\n"
       "  --days <n>            sync the last n days (default 7)\n"
@@ -312,6 +314,37 @@ void sync_activities(SyncContext& cx, int64_t from_ts) {
   }
 }
 
+// Imports every readings_*.csv in the user's Downloads folder (the Omron
+// app exports there). Idempotent, so it runs on every sync.
+int import_bp_downloads(store::Db& db, int64_t& rows) {
+  PWSTR raw = nullptr;
+  if (FAILED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &raw)) || raw == nullptr) return 0;
+  const std::filesystem::path downloads(raw);
+  CoTaskMemFree(raw);
+  int failures = 0;
+  std::error_code ec;
+  int seen = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(downloads, ec)) {
+    if (!entry.is_regular_file() || ++seen > 20000) continue;
+    const std::string name = entry.path().filename().string();
+    if (name.rfind("readings_", 0) != 0 || entry.path().extension() != ".csv") continue;
+    std::string text;
+    store::ImportCounts c;
+    std::string err;
+    if (!gutil::read_text_file(entry.path(), text) || !store::import_bp_csv(db, text, c, err)) {
+      std::fprintf(stderr, "  blood pressure %s: %s' + chr(92) + 'n", name.c_str(), err.c_str());
+      ++failures;
+      continue;
+    }
+    rows += c.rows;
+    if (c.rows > 0) {
+      std::printf("  %-10s %s  %lld new readings' + chr(92) + 'n", "bp", name.c_str(),
+                  static_cast<long long>(c.rows));
+    }
+  }
+  return failures;
+}
+
 int import_one_path(store::Db& db, const std::filesystem::path& p, bool force, int& files,
                     int64_t& rows) {
   int failures = 0;
@@ -486,6 +519,7 @@ int run_sync(const Options& o) {
     date = gutil::add_days(date, 1);
   }
   sync_weight(cx, from, to);
+  cx.failures += import_bp_downloads(db, cx.rows);
   int64_t from_ts = 0;
   const bool parsed = gutil::parse_date(from, from_ts);
   G_ASSERT(parsed);
@@ -545,6 +579,33 @@ int run_get(const Options& o) {
   return 0;
 }
 
+int run_import_bp(const Options& o) {
+  store::Db db;
+  std::filesystem::path data_dir;
+  if (!open_db(o, db, data_dir)) return 1;
+  int failures = 0;
+  int64_t rows = 0;
+  if (o.args.empty()) {
+    failures = import_bp_downloads(db, rows);
+  } else {
+    for (const std::string& a : o.args) {
+      std::string text;
+      store::ImportCounts c;
+      std::string err;
+      if (!gutil::read_text_file(a, text) || !store::import_bp_csv(db, text, c, err)) {
+        std::fprintf(stderr, "  %s: %s' + chr(92) + 'n", a.c_str(), err.empty() ? "cannot read" : err.c_str());
+        ++failures;
+        continue;
+      }
+      rows += c.rows;
+      std::printf("  %s  %lld new readings' + chr(92) + 'n", a.c_str(), static_cast<long long>(c.rows));
+    }
+  }
+  std::printf("imported %lld blood pressure readings, %d failures' + chr(92) + 'n",
+              static_cast<long long>(rows), failures);
+  return failures == 0 ? 0 : 1;
+}
+
 int run_stats(const Options& o) {
   store::Db db;
   std::filesystem::path data_dir;
@@ -554,7 +615,7 @@ int run_stats(const Options& o) {
       "sleep",         "sleep_stage",      "sleep_level_sample", "respiration_sample",
       "spo2_sample",   "hrv_daily",        "hrv_sample",         "weight",
       "activity",      "activity_session", "activity_lap",       "activity_record",
-      "activity_hrv",  "fit_file",         "sync_log"};
+      "activity_hrv",  "fit_file",         "blood_pressure",    "sync_log"};
   std::printf("database: %s\n", (data_dir / "garmin.db").string().c_str());
   for (const char* t : kTables) {
     const std::string sql = std::string("SELECT COUNT(*) FROM ") + t;

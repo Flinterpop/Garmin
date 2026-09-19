@@ -43,6 +43,7 @@ int main(int argc, char** argv) {
   if (o.command == "import") return cmd::run_import(o);
   if (o.command == "get") return cmd::run_get(o);
   if (o.command == "stats") return cmd::run_stats(o);
+  if (o.command == "import-bp") return cmd::run_import_bp(o);
   cmd::usage();
   return 2;
 }

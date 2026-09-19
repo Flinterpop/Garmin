@@ -75,6 +75,10 @@ constexpr const char* kSchema[] = {
     "CREATE TABLE IF NOT EXISTS activity_hrv("
     " fit_file_id INTEGER NOT NULL, seq INTEGER NOT NULL, rr_ms REAL NOT NULL,"
     " PRIMARY KEY(fit_file_id, seq)) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS blood_pressure("
+    " ts INTEGER NOT NULL, cuff_user INTEGER NOT NULL, systolic INTEGER NOT NULL,"
+    " diastolic INTEGER NOT NULL, pulse INTEGER, model TEXT, device TEXT, movement INTEGER,"
+    " irregular INTEGER, PRIMARY KEY(ts, cuff_user, systolic, diastolic)) WITHOUT ROWID",
     "CREATE TABLE IF NOT EXISTS sync_log("
     " kind TEXT NOT NULL, key TEXT NOT NULL, fetched_at INTEGER NOT NULL,"
     " ok INTEGER NOT NULL, PRIMARY KEY(kind, key)) WITHOUT ROWID",

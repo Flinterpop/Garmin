@@ -501,6 +501,48 @@ Figure load_trends(store::Db& db, int days) {
   }
   {
     Panel p;
+    p.title = "Blood pressure";
+    Series sys1 = make_series("Systolic", "mmHg", colors::kHeartRate, Style::kPoints);
+    Series dia1 = make_series("Diastolic", "mmHg", colors::kBodyBattery, Style::kPoints);
+    Series pulse = make_series("Pulse", "bpm", colors::kAltitude, Style::kPoints, YAxisSide::kRight);
+    Series sys2 = make_series("Systolic (cuff user 2)", "mmHg", plot::rgb(0xE377C2), Style::kPoints);
+    Series dia2 = make_series("Diastolic (cuff user 2)", "mmHg", plot::rgb(0x17BECF), Style::kPoints);
+    store::Stmt st(db,
+                   "SELECT ts, cuff_user, systolic, diastolic, pulse FROM blood_pressure"
+                   " WHERE ts BETWEEN ? AND ? ORDER BY ts");
+    if (st.ok()) {
+      st.bind(1, t0).bind(2, t1);
+      for (size_t i = 0; i < kMaxSamples && st.row(); ++i) {
+        const double x = static_cast<double>(st.col_int(0));
+        const bool second = st.col_int(1) == 2;
+        Series& sy = second ? sys2 : sys1;
+        Series& di = second ? dia2 : dia1;
+        sy.x.push_back(x);
+        sy.y.push_back(st.col_double(2));
+        di.x.push_back(x);
+        di.y.push_back(st.col_double(3));
+        if (!st.col_null(4)) {
+          pulse.x.push_back(x);
+          pulse.y.push_back(st.col_double(4));
+        }
+      }
+    }
+    for (Series* s : {&sys1, &dia1, &sys2, &dia2, &pulse}) s->gap_break = 4.0 * kDay;
+    if (!sys1.x.empty() || !sys2.x.empty()) {
+      p.hlines.push_back(plot::HLine{140.0, "140", plot::rgb(0xD62728, 0.6f), YAxisSide::kLeft});
+      p.hlines.push_back(plot::HLine{120.0, "120", plot::rgb(0x999999, 0.8f), YAxisSide::kLeft});
+      p.hlines.push_back(plot::HLine{90.0, "90", plot::rgb(0xD62728, 0.6f), YAxisSide::kLeft});
+      p.hlines.push_back(plot::HLine{80.0, "80", plot::rgb(0x999999, 0.8f), YAxisSide::kLeft});
+      if (!sys1.x.empty()) p.series.push_back(std::move(sys1));
+      if (!dia1.x.empty()) p.series.push_back(std::move(dia1));
+      if (!sys2.x.empty()) p.series.push_back(std::move(sys2));
+      if (!dia2.x.empty()) p.series.push_back(std::move(dia2));
+      if (!pulse.x.empty()) p.series.push_back(std::move(pulse));
+      fig.panels.push_back(std::move(p));
+    }
+  }
+  {
+    Panel p;
     p.title = "Steps";
     p.left.include_zero = true;
     Series steps = make_series("Steps", "", colors::kSteps, Style::kBars);

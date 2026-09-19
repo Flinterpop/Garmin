@@ -414,6 +414,19 @@ void PlotWidget::draw_panel(ID2D1RenderTarget* rt, const Panel& panel, const Pan
   for (const Series& sr : panel.series) {
     if (sr.style != Style::kBand) draw_series(rt, sr, L);
   }
+  for (const HLine& h : panel.hlines) {
+    const bool right = h.axis == YAxisSide::kRight;
+    const float py = std::round(y_to_px(h.y, right ? L.right_lo : L.left_lo,
+                                        right ? L.right_hi : L.left_hi, P)) + 0.5f;
+    if (py < P.top || py > P.bottom) continue;
+    brush_->SetColor(to_d2d(h.color));
+    rt->DrawLine(D2D1::Point2F(P.left, py), D2D1::Point2F(P.right, py), brush_.Get(), 1.0f,
+                 dashed_.Get());
+    if (!h.label.empty()) {
+      text(rt, widen(h.label), D2D1::RectF(P.left, py - s(kLineHeight), P.right - s(4.0f), py),
+           DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_FAR, h.color);
+    }
+  }
   rt->PopAxisAlignedClip();
 
   brush_->SetColor(to_d2d(kPlotBorder));
@@ -446,7 +459,7 @@ void PlotWidget::draw_series(ID2D1RenderTarget* rt, const Series& sr, const Pane
     const float zero = y_to_px(std::clamp(0.0, lo, hi), lo, hi, P);
     const size_t n = sr.x.size();
     for (size_t i = 0; i < n; ++i) {
-      const double xe = sr.x[i] + sr.bar_width;
+      const double xe = sr.bar_end(i);
       if (xe < x0_ || sr.x[i] > x1_) continue;
       const float a = x_to_px(sr.x[i]) + 1.0f;
       const float b = std::max(x_to_px(xe) - 1.0f, a + 1.0f);
@@ -530,7 +543,7 @@ void PlotWidget::collect_hover(double xq, std::vector<HoverEntry>& out) const {
         const auto it = std::upper_bound(sr.x.begin(), sr.x.end(), xq);
         if (it == sr.x.begin()) continue;
         i = static_cast<size_t>(it - sr.x.begin()) - 1;
-        const double hold = sr.style == Style::kBars ? sr.bar_width : tol * 10.0;
+        const double hold = sr.style == Style::kBars ? sr.bar_end(i) - sr.x[i] : tol * 10.0;
         if (xq - sr.x[i] > hold) continue;
       } else if (std::fabs(sr.x[i] - xq) > tol) {
         continue;

@@ -39,6 +39,13 @@ add_library(plotlib STATIC
   plot/plot_types.h plot/plot_types.cpp
   plot/ticks.h plot/ticks.cpp
   plot/decimate.h plot/decimate.cpp
-  plot/plot_widget.h plot/plot_widget.cpp)
+  plot/plot_widget.h plot/plot_widget.cpp
+  plot/calendar_widget.h plot/calendar_widget.cpp)
 target_include_directories(plotlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(plotlib PUBLIC gutil d2d1 dwrite)
+
+# analysis: derived metrics over decoded data (pure functions)
+add_library(analysislib STATIC
+  analysis/hockey.h analysis/hockey.cpp)
+target_include_directories(analysislib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(analysislib PUBLIC gutil)

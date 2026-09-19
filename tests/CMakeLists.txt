@@ -5,7 +5,8 @@ add_executable(garmin_tests
   test_zip_reader.cpp
   test_time_util.cpp
   test_ticks.cpp
-  test_decimate.cpp)
-target_link_libraries(garmin_tests PRIVATE fitlib gclib plotlib gutil Catch2::Catch2WithMain)
+  test_decimate.cpp
+  test_hockey.cpp)
+target_link_libraries(garmin_tests PRIVATE fitlib gclib plotlib analysislib gutil Catch2::Catch2WithMain)
 include(Catch)
 catch_discover_tests(garmin_tests)

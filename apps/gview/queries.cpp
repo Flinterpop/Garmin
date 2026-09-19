@@ -22,6 +22,7 @@ namespace {
 constexpr double kDay = 86400.0;
 constexpr double kDayViewStartHour = -6.0;  // 18:00 the evening before
 constexpr double kDayViewEndHour = 24.0;
+constexpr double kLbPerKg = 2.20462262;  // weight is stored in kg, shown in lb
 
 std::string fmt(const char* f, double a) {
   char buf[64] = {};
@@ -421,8 +422,9 @@ Figure load_trends(store::Db& db, int days) {
   {
     Panel p;
     p.title = "Weight";
-    Series w = make_series("Weight", "kg", colors::kWeight, Style::kPoints);
+    Series w = make_series("Weight", "lb", colors::kWeight, Style::kPoints);
     load_xy(db, "SELECT ts, weight_kg FROM weight WHERE ts BETWEEN ? AND ? ORDER BY ts", t0, t1, w);
+    for (double& v : w.y) v *= kLbPerKg;
     Series fat = make_series("Body fat", "%", colors::kPower, Style::kPoints, YAxisSide::kRight);
     load_xy(db,
             "SELECT ts, body_fat_pct FROM weight WHERE body_fat_pct IS NOT NULL AND ts BETWEEN ?"

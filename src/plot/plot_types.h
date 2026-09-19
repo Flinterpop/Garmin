@@ -63,8 +63,14 @@ struct Series {
   Style style = Style::kLine;
   YAxisSide axis = YAxisSide::kLeft;
   float width = 1.5f;
-  double bar_width = 0.0;  // kBars: seconds
-  bool valid() const { return x.size() == y.size() && (style != Style::kBand || x2.size() == x.size()); }
+  double bar_width = 0.0;  // kBars: seconds (ignored when x2 gives per-bar ends)
+  bool valid() const {
+    if (x.size() != y.size()) return false;
+    if (style == Style::kBand) return x2.size() == x.size();
+    if (style == Style::kBars) return x2.empty() || x2.size() == x.size();
+    return true;
+  }
+  double bar_end(size_t i) const { return x2.empty() ? x[i] + bar_width : x2[i]; }
 };
 
 struct AxisSpec {
@@ -75,9 +81,18 @@ struct AxisSpec {
   bool include_zero = false;
 };
 
+// Horizontal reference line (HR zone boundary, goal, baseline).
+struct HLine {
+  double y = 0.0;
+  std::string label;
+  Color color;
+  YAxisSide axis = YAxisSide::kLeft;
+};
+
 struct Panel {
   std::string title;
   std::vector<Series> series;
+  std::vector<HLine> hlines;
   AxisSpec left;
   AxisSpec right;
   float weight = 1.0f;  // relative height within the figure

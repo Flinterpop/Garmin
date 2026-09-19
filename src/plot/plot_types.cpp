@@ -29,7 +29,7 @@ bool Figure::finalize() {
       grow(s.x.front());
       grow(s.x.back());
       if (s.style == Style::kBand) grow(s.x2.back());
-      if (s.style == Style::kBars) grow(s.x.back() + s.bar_width);
+      if (s.style == Style::kBars) grow(s.bar_end(s.x.size() - 1));
     }
   }
   for (const Marker& m : markers) grow(m.x);

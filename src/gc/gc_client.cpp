@@ -1,5 +1,7 @@
 #include "gc/gc_client.h"
 
+#include <windows.h>
+
 #include <cstdlib>
 #include <regex>
 
@@ -270,16 +272,27 @@ bool GarminClient::authed_request(const std::string& path, HttpResponse& resp,
   if (!ensure_access_token(err)) return false;
   http_->set_user_agent(kUaSso);
   const std::string url = api_base() + path;
-  for (int attempt = 0; attempt < 2; ++attempt) {
+  // Garmin's download-service answers 5xx (Cloudflare 504) fairly often for
+  // older dates; a couple of spaced retries clears most of them.
+  constexpr int kMaxAttempts = 4;
+  constexpr DWORD kBackoffMs[kMaxAttempts] = {0, 2000, 5000, 10000};
+  bool refreshed = false;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    if (kBackoffMs[attempt] > 0) Sleep(kBackoffMs[attempt]);
     HeaderMap hdr = {{"Authorization", "Bearer " + tokens_.oauth2.access_token},
                      {"Accept", "application/json, */*"}};
     if (!http_->get(url, hdr, resp, err)) return false;
-    if (resp.status != 401 && resp.status != 403) return true;
-    // Bearer rejected: mint a fresh one once and retry.
-    tokens_.oauth2.access_token.clear();
-    if (!ensure_access_token(err)) return false;
+    if ((resp.status == 401 || resp.status == 403) && !refreshed) {
+      // Bearer rejected: mint a fresh one once and retry immediately.
+      refreshed = true;
+      tokens_.oauth2.access_token.clear();
+      if (!ensure_access_token(err)) return false;
+      continue;
+    }
+    if (resp.status >= 500 && resp.status <= 599) continue;
+    return true;
   }
-  return true;
+  return true;  // last response (an error status) is reported by the caller
 }
 
 bool GarminClient::get_json(const std::string& path, json& out, std::string& err) {

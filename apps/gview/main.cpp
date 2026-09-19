@@ -3,6 +3,7 @@
 // hover shows values, Home fits, 1/2/3 switch views, F5 reloads.
 #include <windows.h>
 #include <windowsx.h>
+#include <commctrl.h>
 #include <d2d1.h>
 #include <dwrite.h>
 #include <shellapi.h>
@@ -12,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "plot/calendar_widget.h"
 #include "plot/plot_widget.h"
 #include "queries.h"
 #include "store/db.h"
@@ -20,6 +22,7 @@
 
 #pragma comment(lib, "d2d1")
 #pragma comment(lib, "dwrite")
+#pragma comment(lib, "comctl32")
 
 using Microsoft::WRL::ComPtr;
 
@@ -31,6 +34,8 @@ constexpr int kListId = 1001;
 constexpr int kIdmViewDay = 101;
 constexpr int kIdmViewTrends = 102;
 constexpr int kIdmViewActivity = 103;
+constexpr int kIdmViewHockey = 104;
+constexpr int kIdmViewCalendar = 105;
 constexpr int kIdmFit = 201;
 constexpr int kIdmZoomIn = 202;
 constexpr int kIdmZoomOut = 203;
@@ -40,7 +45,7 @@ constexpr double kWheelZoomPerNotch = 0.8;
 constexpr double kKeyZoom = 0.7;
 constexpr float kKeyPanFrac = 0.1f;
 
-enum class Mode { kDay, kTrends, kActivity };
+enum class Mode { kDay, kTrends, kActivity, kHockey, kCalendar };
 
 struct App {
   HWND hwnd = nullptr;
@@ -50,12 +55,16 @@ struct App {
   ComPtr<IDWriteFactory> dwrite;
   ComPtr<ID2D1HwndRenderTarget> rt;
   plot::PlotWidget widget;
+  plot::CalendarWidget calendar;
   store::Db db;
   std::filesystem::path db_path;
   Mode mode = Mode::kDay;
   std::vector<gview::DayEntry> days;
   std::vector<gview::ActivityEntry> activities;
   std::vector<gview::TrendRange> ranges;
+  std::vector<gview::GameEntry> games;
+  std::vector<gview::MonthEntry> months;
+  double hockey_hr_max = 190.0;
   float scale = 1.0f;
   bool dragging = false;
   bool moved_while_dragging = false;
@@ -101,8 +110,10 @@ void layout(App& a) {
   const int list_w = static_cast<int>(kListWidthCss * a.scale);
   MoveWindow(a.list, 0, 0, list_w, rc.bottom - rc.top, TRUE);
   const RECT pr = plot_rect(a);
-  a.widget.set_rect(D2D1::RectF(static_cast<float>(pr.left), static_cast<float>(pr.top),
-                                static_cast<float>(pr.right), static_cast<float>(pr.bottom)));
+  const D2D1_RECT_F prf = D2D1::RectF(static_cast<float>(pr.left), static_cast<float>(pr.top),
+                                      static_cast<float>(pr.right), static_cast<float>(pr.bottom));
+  a.widget.set_rect(prf);
+  a.calendar.set_rect(prf);
   if (a.rt) {
     a.rt->Resize(D2D1::SizeU(static_cast<UINT32>(rc.right - rc.left),
                              static_cast<UINT32>(rc.bottom - rc.top)));
@@ -134,6 +145,12 @@ void fill_list(App& a) {
     case Mode::kActivity:
       for (const auto& e : a.activities) add(e.label);
       break;
+    case Mode::kHockey:
+      for (const auto& g : a.games) add(g.label);
+      break;
+    case Mode::kCalendar:
+      for (const auto& m : a.months) add(m.label);
+      break;
   }
   SendMessageW(a.list, WM_SETREDRAW, TRUE, 0);
   InvalidateRect(a.list, nullptr, TRUE);
@@ -160,10 +177,27 @@ void show_selection(App& a) {
           fig = gview::load_activity(a.db, a.activities[static_cast<size_t>(sel)]);
         }
         break;
+      case Mode::kHockey:
+        if (static_cast<size_t>(sel) < a.games.size()) {
+          const gview::GameEntry& g = a.games[static_cast<size_t>(sel)];
+          fig = g.season ? gview::load_season(a.db, a.hockey_hr_max)
+                         : gview::load_game(a.db, g, a.hockey_hr_max);
+        }
+        break;
+      case Mode::kCalendar:
+        if (static_cast<size_t>(sel) < a.months.size()) {
+          const gview::MonthEntry& m = a.months[static_cast<size_t>(sel)];
+          plot::MonthData md = gview::load_month(a.db, m.year, m.month);
+          title = "Calendar  " + md.title;
+          a.calendar.set_month(std::move(md));
+        }
+        break;
     }
   }
-  title = fig.title;
-  a.widget.set_figure(std::move(fig));
+  if (a.mode != Mode::kCalendar) {
+    title = fig.title;
+    a.widget.set_figure(std::move(fig));
+  }
   set_title(a, title);
   InvalidateRect(a.hwnd, nullptr, FALSE);
 }
@@ -178,6 +212,9 @@ void reload(App& a) {
   a.days = gview::list_days(a.db);
   a.activities = gview::list_activities(a.db);
   a.ranges = gview::trend_ranges();
+  a.games = gview::list_games(a.db);
+  a.months = gview::list_months(a.db);
+  a.hockey_hr_max = gview::hockey_hr_max(a.db);
   fill_list(a);
   SendMessageW(a.list, LB_SETCURSEL, 0, 0);
   show_selection(a);
@@ -186,10 +223,8 @@ void reload(App& a) {
 void set_mode(App& a, Mode m) {
   a.mode = m;
   HMENU menu = GetMenu(a.hwnd);
-  CheckMenuRadioItem(menu, kIdmViewDay, kIdmViewActivity,
-                     m == Mode::kDay ? kIdmViewDay
-                                     : (m == Mode::kTrends ? kIdmViewTrends : kIdmViewActivity),
-                     MF_BYCOMMAND);
+  const int id = kIdmViewDay + static_cast<int>(m);
+  CheckMenuRadioItem(menu, kIdmViewDay, kIdmViewCalendar, id, MF_BYCOMMAND);
   fill_list(a);
   SendMessageW(a.list, LB_SETCURSEL, 0, 0);
   show_selection(a);
@@ -204,7 +239,11 @@ void paint(App& a) {
   }
   a.rt->BeginDraw();
   a.rt->Clear(D2D1::ColorF(D2D1::ColorF::White));
-  a.widget.render(a.rt.Get());
+  if (a.mode == Mode::kCalendar) {
+    a.calendar.render(a.rt.Get());
+  } else {
+    a.widget.render(a.rt.Get());
+  }
   const HRESULT hr = a.rt->EndDraw();
   if (hr == D2DERR_RECREATE_TARGET) a.rt.Reset();
   EndPaint(a.hwnd, &ps);
@@ -227,6 +266,8 @@ HMENU build_menu() {
   AppendMenuW(view, MF_STRING, kIdmViewDay, L"&Day\t1");
   AppendMenuW(view, MF_STRING, kIdmViewTrends, L"&Trends\t2");
   AppendMenuW(view, MF_STRING, kIdmViewActivity, L"&Activity\t3");
+  AppendMenuW(view, MF_STRING, kIdmViewHockey, L"&Hockey\t4");
+  AppendMenuW(view, MF_STRING, kIdmViewCalendar, L"&Calendar\t5");
   AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(view, MF_STRING, kIdmFit, L"&Fit to data\tHome");
   AppendMenuW(view, MF_STRING, kIdmZoomIn, L"Zoom &in\t+");
@@ -237,8 +278,22 @@ HMENU build_menu() {
   AppendMenuW(data, MF_STRING, kIdmExit, L"E&xit");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(view), L"&View");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(data), L"&Data");
-  CheckMenuRadioItem(bar, kIdmViewDay, kIdmViewActivity, kIdmViewDay, MF_BYCOMMAND);
+  CheckMenuRadioItem(bar, kIdmViewDay, kIdmViewCalendar, kIdmViewDay, MF_BYCOMMAND);
   return bar;
+}
+
+// The list keeps Up/Down/PageUp/PageDown; every other key is the plot's.
+LRESULT CALLBACK list_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+  if (msg == WM_KEYDOWN || msg == WM_CHAR) {
+    const bool nav = wp == VK_UP || wp == VK_DOWN || wp == VK_PRIOR || wp == VK_NEXT;
+    if (!nav && msg == WM_KEYDOWN) {
+      SendMessageW(GetParent(hwnd), msg, wp, lp);
+      return 0;
+    }
+    if (!nav && msg == WM_CHAR) return 0;  // no type-ahead search
+  }
+  if (msg == WM_NCDESTROY) RemoveWindowSubclass(hwnd, list_proc, 0);
+  return DefSubclassProc(hwnd, msg, wp, lp);
 }
 
 bool in_plot(const App& a, int x, int y) {
@@ -258,8 +313,10 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                     LBS_NOINTEGRALHEIGHT | WS_BORDER,
                                 0, 0, 10, 10, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kListId)), nullptr,
                                 nullptr);
+      SetWindowSubclass(a->list, list_proc, 0, 0);
       apply_list_font(*a);
       a->widget.set_dpi_scale(a->scale);
+      a->calendar.set_dpi_scale(a->scale);
       layout(*a);
       reload(*a);
       return 0;
@@ -270,6 +327,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DPICHANGED: {
       a->scale = static_cast<float>(HIWORD(wp)) / 96.0f;
       a->widget.set_dpi_scale(a->scale);
+      a->calendar.set_dpi_scale(a->scale);
       apply_list_font(*a);
       const RECT* r = reinterpret_cast<const RECT*>(lp);
       SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
@@ -292,6 +350,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case kIdmViewDay: set_mode(*a, Mode::kDay); break;
         case kIdmViewTrends: set_mode(*a, Mode::kTrends); break;
         case kIdmViewActivity: set_mode(*a, Mode::kActivity); break;
+        case kIdmViewHockey: set_mode(*a, Mode::kHockey); break;
+        case kIdmViewCalendar: set_mode(*a, Mode::kCalendar); break;
         case kIdmFit: a->widget.fit_x(); InvalidateRect(hwnd, nullptr, FALSE); break;
         case kIdmZoomIn:
         case kIdmZoomOut: {
@@ -310,7 +370,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEWHEEL: {
       POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
       ScreenToClient(hwnd, &pt);
-      if (!in_plot(*a, pt.x, pt.y)) break;
+      if (!in_plot(*a, pt.x, pt.y) || a->mode == Mode::kCalendar) break;
       const int notches = GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
       double factor = 1.0;
       for (int i = 0; i < 10 && i < (notches < 0 ? -notches : notches); ++i) {
@@ -323,7 +383,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDOWN: {
       const int x = GET_X_LPARAM(lp);
       const int y = GET_Y_LPARAM(lp);
-      if (!in_plot(*a, x, y)) break;
+      if (!in_plot(*a, x, y) || a->mode == Mode::kCalendar) break;
       a->dragging = true;
       a->moved_while_dragging = false;
       a->drag_last_x = x;
@@ -348,6 +408,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
       }
       a->widget.set_hover(static_cast<float>(x), static_cast<float>(y), in_plot(*a, x, y));
+      a->calendar.set_hover(static_cast<float>(x), static_cast<float>(y), in_plot(*a, x, y));
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     }
@@ -360,6 +421,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSELEAVE:
       a->tracking_mouse = false;
       a->widget.set_hover(0.0f, 0.0f, false);
+      a->calendar.set_hover(0.0f, 0.0f, false);
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     case WM_KEYDOWN: {
@@ -385,6 +447,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case '1': set_mode(*a, Mode::kDay); return 0;
         case '2': set_mode(*a, Mode::kTrends); return 0;
         case '3': set_mode(*a, Mode::kActivity); return 0;
+        case '4': set_mode(*a, Mode::kHockey); return 0;
+        case '5': set_mode(*a, Mode::kCalendar); return 0;
         default: return DefWindowProcW(hwnd, msg, wp, lp);
       }
       InvalidateRect(hwnd, nullptr, FALSE);
@@ -439,6 +503,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show) {
     return 2;
   }
   if (!app->widget.init(app->d2d.Get(), app->dwrite.Get())) return 2;
+  if (!app->calendar.init(app->d2d.Get(), app->dwrite.Get())) return 2;
 
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);

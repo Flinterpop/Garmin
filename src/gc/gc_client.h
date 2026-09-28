@@ -18,6 +18,13 @@ namespace gc {
 
 using MfaPrompt = std::function<std::string()>;
 
+// What to do with one oauth2 exchange response. Garmin rejects a stale MFA
+// token with 403 "The provided MFA token was invalid", so a rejection while
+// one was sent earns one retry without it. Any other 4xx means the stored
+// login is no longer accepted and only `gsync login` can fix it.
+enum class ExchangeStep { kDone, kRetryWithoutMfa, kLoginRequired, kTransient };
+ExchangeStep classify_exchange(uint32_t status, bool sent_mfa);
+
 class GarminClient {
  public:
   explicit GarminClient(Tokens tokens);
@@ -32,6 +39,10 @@ class GarminClient {
   // Makes sure a usable bearer token exists, minting a new one from the
   // OAuth1 token when expired. Called implicitly by the fetchers.
   bool ensure_access_token(std::string& err);
+
+  // True once a token exchange was refused for good. Sticky for the life of
+  // the client: every later request fails at once with the same message.
+  bool login_required() const { return login_required_; }
 
   const Tokens& tokens() const { return tokens_; }
   bool tokens_dirty() const { return dirty_; }
@@ -66,6 +77,8 @@ class GarminClient {
                       const MfaPrompt& mfa_prompt, std::string& ticket, std::string& err);
   bool oauth1_preauthorized(const OAuthConsumer& c, const std::string& ticket, std::string& err);
   bool oauth2_exchange(const OAuthConsumer& c, std::string& err);
+  bool exchange_once(const OAuthConsumer& c, bool send_mfa, HttpResponse& r, std::string& err);
+  bool store_oauth2(const HttpResponse& r, std::string& err);
   bool authed_request(const std::string& path, HttpResponse& resp, std::string& err);
   std::string api_base() const { return "https://connectapi." + tokens_.oauth1.domain; }
   std::string sso_base() const { return "https://sso." + tokens_.oauth1.domain + "/sso"; }
@@ -73,6 +86,8 @@ class GarminClient {
   std::unique_ptr<HttpClient> http_;
   Tokens tokens_;
   bool dirty_ = false;
+  bool login_required_ = false;
+  std::string login_error_;
   bool have_consumer_ = false;
   OAuthConsumer consumer_;
 };

@@ -1,6 +1,6 @@
 # Garmin
 
-*Last updated: 18 Sep 2026*
+*Last updated: 28 Sep 2026*
 
 Personal health-data tooling: C++20 / Win32, no UI framework. **This repository is not export-controlled** (it is the owner's own fitness data and open-source code under MIT), unlike the other repositories on this machine. Still keep work local; the only outbound traffic is to Garmin Connect and OpenStreetMap tiles.
 
@@ -49,3 +49,4 @@ The full helper is in the session notes; the pattern is: PostMessage keys, sleep
 - `setvbuf(_IOLBF, 0)` is an invalid parameter on MSVC (fail-fast 0xC0000409); use `_IONBF`.
 - `LBS_EXTENDEDSEL` list boxes ignore `LB_SETCURSEL`; use `LB_SETSEL` + `LB_GETSELITEMS`.
 - Garmin's `download-service` answers Cloudflare 504 for older wellness zips; `gsync` retries with backoff and re-fetches unmarked days on the next run.
+- A token-renewal bug only shows up a day after `gsync login`, once the bearer from login has expired; a sync the same evening proves nothing. The v0.1.1 re-exchange re-sent the login `mfa_token`, got 403 "MFA token was invalid", and the nightly task failed silently for 9 days. `tokens.bin` not rewritten since login is the tell. Check `Get-ScheduledTaskInfo GarminSync` (`LastTaskResult` 3 = login required) when reviewing the repo.

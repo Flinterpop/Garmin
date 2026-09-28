@@ -210,21 +210,61 @@ bool GarminClient::oauth1_preauthorized(const OAuthConsumer& c, const std::strin
   return true;
 }
 
-bool GarminClient::oauth2_exchange(const OAuthConsumer& c, std::string& err) {
+ExchangeStep classify_exchange(uint32_t status, bool sent_mfa) {
+  if (status == 200) return ExchangeStep::kDone;
+  if ((status == 401 || status == 403) && sent_mfa) return ExchangeStep::kRetryWithoutMfa;
+  if (status >= 400 && status <= 499) return ExchangeStep::kLoginRequired;
+  return ExchangeStep::kTransient;
+}
+
+bool GarminClient::exchange_once(const OAuthConsumer& c, bool send_mfa, HttpResponse& r,
+                                 std::string& err) {
   G_ASSERT(tokens_.has_oauth1());
+  G_ASSERT(!send_mfa || !tokens_.oauth1.mfa_token.empty());
   const std::string url = api_base() + "/oauth-service/oauth/exchange/user/2.0";
   ParamList body;
-  if (!tokens_.oauth1.mfa_token.empty()) body.emplace_back("mfa_token", tokens_.oauth1.mfa_token);
+  if (send_mfa) body.emplace_back("mfa_token", tokens_.oauth1.mfa_token);
   OAuth1Credentials creds{c.key, c.secret, tokens_.oauth1.token, tokens_.oauth1.token_secret};
   HeaderMap hdr = {{"Authorization", oauth1_authorization_header(creds, "POST", url, {}, body)},
                    {"Content-Type", "application/x-www-form-urlencoded"}};
   http_->set_user_agent(kUaOAuth);
-  HttpResponse r;
-  if (!http_->request("POST", url, hdr, form_encode(body), r, err)) return false;
-  if (r.status != 200) {
-    err = http_failure("oauth2 exchange", r);
-    return false;
+  return http_->request("POST", url, hdr, form_encode(body), r, err);
+}
+
+bool GarminClient::oauth2_exchange(const OAuthConsumer& c, std::string& err) {
+  G_ASSERT(tokens_.has_oauth1());
+  bool send_mfa = !tokens_.oauth1.mfa_token.empty();
+  constexpr int kMaxExchangeAttempts = 2;  // with the MFA token, then without it
+  for (int attempt = 0; attempt < kMaxExchangeAttempts; ++attempt) {
+    HttpResponse r;
+    if (!exchange_once(c, send_mfa, r, err)) return false;
+    switch (classify_exchange(r.status, send_mfa)) {
+      case ExchangeStep::kDone:
+        if (!send_mfa && !tokens_.oauth1.mfa_token.empty()) {
+          tokens_.oauth1.mfa_token.clear();  // stale: stop sending it
+          dirty_ = true;
+        }
+        return store_oauth2(r, err);
+      case ExchangeStep::kRetryWithoutMfa:
+        send_mfa = false;
+        continue;
+      case ExchangeStep::kLoginRequired:
+        login_required_ = true;
+        login_error_ = http_failure("oauth2 exchange", r) +
+                       " -- saved login is no longer accepted, run `gsync login`";
+        err = login_error_;
+        return false;
+      case ExchangeStep::kTransient:
+        err = http_failure("oauth2 exchange", r);
+        return false;
+    }
   }
+  err = "oauth2 exchange: no attempt succeeded";
+  return false;
+}
+
+bool GarminClient::store_oauth2(const HttpResponse& r, std::string& err) {
+  G_ASSERT(r.status == 200);
   const json j = json::parse(r.body, nullptr, false);
   if (!j.is_object() || !j.contains("access_token")) {
     err = "oauth2 exchange: unexpected response";
@@ -256,6 +296,10 @@ bool GarminClient::login(const std::string& email, const std::string& password,
 
 bool GarminClient::ensure_access_token(std::string& err) {
   if (tokens_.oauth2_valid(gutil::now_unix())) return true;
+  if (login_required_) {
+    err = login_error_;
+    return false;
+  }
   if (!tokens_.has_oauth1()) {
     err = "not logged in: run `gsync login`";
     return false;

@@ -2,6 +2,7 @@ add_executable(garmin_tests
   test_fit_crc.cpp
   test_fit_decoder.cpp
   test_oauth1.cpp
+  test_gc_client.cpp
   test_zip_reader.cpp
   test_time_util.cpp
   test_ticks.cpp

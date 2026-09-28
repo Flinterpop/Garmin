@@ -228,6 +228,7 @@ int main(int argc, char** argv) {
     usage();
     return 2;
   }
+  G_ASSERT(!opt.input.empty());
   std::vector<uint8_t> bytes;
   if (!gutil::read_file(opt.input, bytes)) {
     std::fprintf(stderr, "cannot read %s\n", opt.input.c_str());
@@ -256,6 +257,7 @@ int main(int argc, char** argv) {
   };
   std::string err;
   const bool ok = decoder->decode(bytes.data(), bytes.size(), on_message, err);
+  G_ASSERT(printed <= kMaxPrintedMessages);
   if (csv != nullptr && std::fclose(csv) != 0) {
     std::fprintf(stderr, "warning: error closing %s\n", opt.csv_out.c_str());
   }

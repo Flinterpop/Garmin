@@ -32,7 +32,7 @@ constexpr int kMaxActivities = 5000;
 constexpr int kActivityPage = 50;
 constexpr DWORD kPoliteDelayMs = 300;     // between API calls
 constexpr int kWeightChunkDays = 31;
-
+constexpr int kExitLoginRequired = 3;     // 1 = some fetches failed, 2 = usage
 void usage_text() {
   std::fputs(
       "usage: gsync <command> [options]\n"
@@ -54,7 +54,8 @@ void usage_text() {
       "  --no-fit              skip FIT downloads\n"
       "  --force               re-fetch / re-import even if already done\n"
       "  --out <file>          write `get` output to a file\n"
-      "  --log <file>          append all output to a log file (for scheduled runs)\n",
+      "  --log <file>          append all output to a log file (for scheduled runs)\n"
+      "exit codes: 0 ok, 1 some fetches failed, 2 usage error, 3 login required\n",
       stderr);
 }
 
@@ -132,6 +133,7 @@ using DayImport = bool (*)(store::Db&, const std::string&, const json&, store::I
 // One dated endpoint: fetch, save, import, log.
 void sync_day_kind(SyncContext& cx, const char* kind, const std::string& date, DayFetch fetch,
                    DayImport import) {
+  if (cx.client.login_required()) return;  // already reported once
   const bool final_day = date < cx.today;  // today's data is still changing
   if (!cx.opt.force && final_day && store::sync_done(cx.db, kind, date)) return;
   json j;
@@ -199,6 +201,7 @@ void import_zip(SyncContext& cx, const std::vector<uint8_t>& zip,
 }
 
 void sync_wellness_fit(SyncContext& cx, const std::string& date) {
+  if (cx.client.login_required()) return;  // already reported once
   const char* kind = "wellness_fit";
   const bool final_day = date < cx.today;
   if (!cx.opt.force && final_day && store::sync_done(cx.db, kind, date)) return;
@@ -519,18 +522,25 @@ int run_sync(const Options& o) {
     sync_day_kind(cx, "hrv", date, &gc::GarminClient::daily_hrv, &store::import_hrv);
     if (!o.no_fit) sync_wellness_fit(cx, date);
     persist_tokens(*client);
+    if (client->login_required()) break;
     date = gutil::add_days(date, 1);
   }
-  sync_weight(cx, from, to);
-  cx.failures += import_bp_downloads(db, cx.rows);
+  if (!client->login_required()) sync_weight(cx, from, to);
+  cx.failures += import_bp_downloads(db, cx.rows);  // local files, no login needed
   int64_t from_ts = 0;
   const bool parsed = gutil::parse_date(from, from_ts);
   G_ASSERT(parsed);
-  if (o.max_activities > 0) sync_activities(cx, from_ts);
+  if (o.max_activities > 0 && !client->login_required()) sync_activities(cx, from_ts);
   persist_tokens(*client);
 
   std::printf("done: %lld rows written, %d failures\n", static_cast<long long>(cx.rows),
               cx.failures);
+  if (client->login_required()) {
+    std::printf("LOGIN REQUIRED: Garmin refused the saved login; run `gsync login`, then\n"
+                "`gsync sync --from <last good day>` to fill the gap (exit %d)\n",
+                kExitLoginRequired);
+    return kExitLoginRequired;
+  }
   return cx.failures == 0 ? 0 : 1;
 }
 

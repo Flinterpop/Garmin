@@ -2,7 +2,7 @@
 
 [![Release][release-badge]][release-latest] [![License: MIT][license-badge]](LICENSE)
 
-[release-badge]: https://img.shields.io/badge/release-v0.1.1-blue
+[release-badge]: https://img.shields.io/badge/release-v0.1.2-blue
 [release-latest]: https://github.com/Flinterpop/Garmin/releases/latest
 [license-badge]: https://img.shields.io/badge/license-MIT-green
 
@@ -89,7 +89,9 @@ $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interac
 Register-ScheduledTask -TaskName 'GarminSync' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force
 ```
 
-The OAuth1 token lasts about a year; when it expires the log shows "not logged in" and one `gsync login` fixes it.
+The OAuth1 token lasts about a year. The bearer token it mints lasts about a day and is renewed automatically; on MFA accounts Garmin rejects the `mfa_token` saved at login on later renewals (403 "The provided MFA token was invalid"), so `gsync` retries the exchange without it and drops it (before v0.1.2 this broke every nightly run from the second day on). If Garmin refuses the saved login outright, `gsync sync` stops after the first refusal, the log ends with `LOGIN REQUIRED`, and the exit code is 3 (the task's *Last Run Result* shows `0x3`). Run `gsync login`, then `gsync sync --from <last good day>` to fill the gap, since the nightly job only looks back 3 days.
+
+Exit codes: 0 ok, 1 some fetches failed, 2 usage error, 3 login required.
 
 ### Getting files off the watch
 

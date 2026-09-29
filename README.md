@@ -2,7 +2,7 @@
 
 [![Release][release-badge]][release-latest] [![License: MIT][license-badge]](LICENSE)
 
-[release-badge]: https://img.shields.io/badge/release-v0.1.2-blue
+[release-badge]: https://img.shields.io/badge/release-v0.1.3-blue
 [release-latest]: https://github.com/Flinterpop/Garmin/releases/latest
 [license-badge]: https://img.shields.io/badge/license-MIT-green
 
@@ -16,7 +16,7 @@ Three executables:
 
 - **`gsync`** — signs in to Garmin Connect the way the mobile app does, pulls daily summaries, heart rate, sleep, stress / Body Battery, HRV, body composition (the Index scale), the activity list, per-activity FIT files and the daily wellness (monitoring) FIT files, and imports it all into `garmin.db`. Also imports FIT files copied straight off a watch over USB.
 - **`fitdump`** — inspects a single FIT file: summary, per-message counts, session line, and optional full dump to stdout or a long-format CSV.
-- **`gview`** — Win32 + Direct2D viewer over `garmin.db` with five views: **Day** (heart rate, stress, Body Battery, sleep stages, respiration, HRV on one time axis), **Trends** (resting HR, HRV, sleep hours and score, weight in lb, steps over 30 days to everything), **Activity** (HR, speed, altitude, cadence, power, temperature against elapsed time, laps as markers), **Hockey** (per-game shift detection from the HR trace with on-ice bands, HR zones, shift lengths and peak HR, plus a season overview across every game) **Calendar** (month grid with steps, resting HR, Body Battery range, sleep score and the day's activities), **Map** (GPS activities on OpenStreetMap tiles, track coloured by heart rate, start/finish/lap markers, scale bar, hover readout), **Ski** (runs and lifts detected from the altitude profile: per-run vertical, top speed and HR, plus a season overview), **Compare** (Ctrl-click two activities to overlay HR, speed, altitude and cadence) and **Sleep** (one night: hypnogram, HR/HRV, respiration/SpO2/stress). Wheel zooms, drag pans, hover shows every value at the cursor. Trends carry a trailing 30-day mean ± 1 σ band for resting HR, HRV and sleep hours with days beyond 2 σ flagged, and a blood-pressure panel when Omron CSV exports are present.
+- **`gview`** — Win32 + Direct2D viewer over `garmin.db` with nine views: **Day** (heart rate, stress, Body Battery, sleep stages, respiration, HRV on one time axis), **Trends** (resting HR, HRV, sleep hours and score, weight in lb, steps over 30 days to everything), **Activity** (HR, speed, altitude, cadence, power, temperature against elapsed time, laps as markers; activities with GPS get the map beside the charts, and hovering either one marks the same moment on the other), **Hockey** (per-game shift detection from the HR trace with on-ice bands, HR zones, shift lengths and peak HR, plus a season overview across every game), **Calendar** (month grid with steps, resting HR, Body Battery range, sleep score and the day's activities), **Map** (GPS activities on OpenStreetMap tiles, track coloured by heart rate, start/finish/lap markers, scale bar, hover readout), **Ski** (runs and lifts detected from the altitude profile: per-run vertical, top speed and HR, plus a season overview), **Compare** (Ctrl-click two activities to overlay HR, speed, altitude and cadence) and **Sleep** (one night: hypnogram, HR/HRV, respiration/SpO2/stress). Wheel zooms, drag pans, hover shows every value at the cursor. Trends carry a trailing 30-day mean ± 1 σ band for resting HR, HRV and sleep hours with days beyond 2 σ flagged, and a blood-pressure panel when Omron CSV exports are present.
 
 ## Status
 
@@ -35,7 +35,7 @@ Notes:
 
 - The Connect API is Garmin's unofficial app API (the same one `garth` / `python-garminconnect` use). Garmin can change it without notice; when that happens `gsync get <path>` is the debugging tool. The wellness-zip endpoint answers Cloudflare 504 for older dates fairly often; `gsync` retries 5xx with backoff and leaves failed days unmarked so the next sync picks them up.
 - Weight is stored in kg and displayed in pounds.
-- The Map view fetches tiles from `tile.openstreetmap.org` (the only traffic that does not go to Garmin), with an identifying User-Agent and an on-disk cache in `%LOCALAPPDATA%\GarminSync\tiles`, as the OSM tile usage policy asks. Only tiles currently on screen are requested.
+- The map fetches tiles from the selected map layer's server (OpenStreetMap by default; see [Map layers](#map-layers)). That is the only traffic that does not go to Garmin. Every provider gets an identifying User-Agent, at most two connections and only the tiles currently on screen, as the OSM tile usage policy asks; tiles are cached on disk in `%LOCALAPPDATA%\GarminSync\tiles` except where the provider's terms forbid it (Google, Azure Maps).
 - The OAuth consumer key pair is fetched from the public location `garth` publishes, or can be supplied via `GARMIN_OAUTH_CONSUMER_KEY` / `GARMIN_OAUTH_CONSUMER_SECRET`.
 
 ## Build
@@ -70,7 +70,37 @@ fitdump some.fit --csv out.csv  # mesg,timestamp,field,value,units
 gview                           # opens the default database; --data <dir> for another
 ```
 
-`gview` keys: `1` – `9` switch Day / Trends / Activity / Hockey / Calendar / Map / Ski / Compare / Sleep, `Up` / `Down` step through the list, mouse wheel zooms around the cursor, drag pans, `Home` fits, `+` / `-` zoom, `F5` reloads after a sync.
+`gview` keys: `1` – `9` switch Day / Trends / Activity / Hockey / Calendar / Map / Ski / Compare / Sleep, `Up` / `Down` step through the list, mouse wheel zooms around the cursor, drag pans, `Home` fits, `+` / `-` zoom, `L` cycles the map layer, `F5` reloads after a sync.
+
+### Map layers
+
+**View → Map layer** picks the base map for the Map view and the Activity view's map, plus optional route overlays; `L` cycles through the base maps you can use. The choice is remembered in `gview.ini` next to `gview.exe`.
+
+| Layer | Key needed | Notes |
+|---|---|---|
+| OpenStreetMap | no | default |
+| CyclOSM | no | cycling: lanes, routes, surfaces |
+| OpenTopoMap | no | contours and trails; zoom 17 max |
+| Esri World Imagery, Esri World Topo | no | Esri's terms formally expect an ArcGIS account |
+| Thunderforest OpenCycleMap, Outdoors | `thunderforest` | free hobby key from thunderforest.com |
+| Google Maps, Satellite, Terrain | `google` | Map Tiles API key (Google Cloud, billing enabled); tiles are not stored on disk |
+| Azure Maps road, imagery | `azure_maps` | Bing Maps' successor; Azure Maps key; tiles are not stored on disk |
+| Hiking / cycling routes overlay | no | Waymarked Trails, drawn over any base map |
+
+Keys go in a sidecar `gview.ini` beside `gview.exe`. Layers whose key is missing are greyed out in the menu.
+
+```ini
+[keys]
+google = your-google-map-tiles-api-key
+azure_maps = your-azure-maps-key
+thunderforest = your-thunderforest-key
+
+[map]
+base = osm
+overlays = wmt_hiking
+```
+
+**`gview.ini` holds secrets: never commit it or ship it.** `*.ini` is in `.gitignore`, and the release zip contains only the three executables, the README and the LICENSE.
 
 Hockey shifts are detected from the smoothed HR trace: each rising leg (with 12 bpm hysteresis) whose peak clears the game's median HR is a shift, since HR climbs on the ice and falls on the bench. Zones are 60/70/80/90 % of a robust HR max (95th percentile of per-game maxima). Both live in `src/analysis/hockey.cpp` and are unit-tested on a synthetic game.
 

@@ -54,6 +54,8 @@ target_link_libraries(analysislib PUBLIC gutil)
 # map: OSM tiles + GPS track rendering (Direct2D, WIC)
 add_library(maplib STATIC
   map/mercator.h map/mercator.cpp
+  map/tile_provider.h map/tile_provider.cpp
+  map/map_settings.h map/map_settings.cpp
   map/tile_cache.h map/tile_cache.cpp
   map/map_widget.h map/map_widget.cpp)
 target_include_directories(maplib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

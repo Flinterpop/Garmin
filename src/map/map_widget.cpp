@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "map/tile_provider.h"
 #include "plot/plot_widget.h"  // widen()
 #include "plot/ticks.h"
 #include "util/assert.h"
@@ -59,6 +60,18 @@ std::string pace_label(double speed_mps) {
 }
 
 }  // namespace
+
+size_t index_at_time(const std::vector<TrackPoint>& points, double t) {
+  G_ASSERT(points.size() <= kMaxTrackPoints);
+  if (points.empty()) return SIZE_MAX;
+  const auto it = std::lower_bound(points.begin(), points.end(), t,
+                                   [](const TrackPoint& p, double v) { return p.elapsed_s < v; });
+  if (it == points.end()) return points.size() - 1;
+  const size_t i = static_cast<size_t>(it - points.begin());
+  if (i > 0 && t - points[i - 1].elapsed_s < it->elapsed_s - t) return i - 1;
+  G_ASSERT(i < points.size());
+  return i;
+}
 
 bool MapWidget::init(ID2D1Factory* d2d, IDWriteFactory* dwrite, IWICImagingFactory* wic,
                      TileCache* tiles) {
@@ -119,7 +132,34 @@ void MapWidget::fit() {
   center_ = WorldPoint{(x0 + x1) / 2.0, (y0 + y1) / 2.0};
   const float w = std::max(50.0f, rect_.right - rect_.left - s(80.0f));
   const float h = std::max(50.0f, rect_.bottom - rect_.top - s(80.0f));
-  zoom_ = zoom_to_fit(x1 - x0, y1 - y0, w, h);
+  zoom_ = std::min(zoom_to_fit(x1 - x0, y1 - y0, w, h), max_zoom());
+}
+
+void MapWidget::set_layers(size_t base, const std::vector<size_t>& overlays) {
+  const std::vector<TileProvider>& t = tile_providers();
+  G_REQUIRE_VOID(base < t.size() && !t[base].overlay);
+  base_ = base;
+  overlays_.clear();
+  for (size_t i = 0; i < overlays.size() && i < kMaxProviders; ++i) {
+    if (overlays[i] < t.size() && t[overlays[i]].overlay) overlays_.push_back(overlays[i]);
+  }
+  zoom_ = std::min(zoom_, max_zoom());
+  G_ASSERT(zoom_ >= kMinZoom);
+}
+
+int MapWidget::max_zoom() const {
+  G_ASSERT(base_ < tile_providers().size());
+  return std::clamp(tile_providers()[base_].max_zoom, kMinZoom, kMaxZoom);
+}
+
+std::wstring MapWidget::attribution() const {
+  const std::vector<TileProvider>& t = tile_providers();
+  G_ASSERT(base_ < t.size());
+  std::string s = t[base_].attribution;
+  for (size_t i = 0; i < overlays_.size() && i < kMaxProviders; ++i) {
+    s += "  |  " + t[overlays_[i]].attribution;
+  }
+  return plot::widen(s);
 }
 
 double MapWidget::world_px() const {
@@ -140,7 +180,7 @@ WorldPoint MapWidget::to_world_px(float px, float py) const {
 }
 
 void MapWidget::zoom_step(float px, float py, int delta) {
-  const int nz = std::clamp(zoom_ + delta, kMinZoom, kMaxZoom);
+  const int nz = std::clamp(zoom_ + delta, kMinZoom, max_zoom());
   if (nz == zoom_) return;
   const WorldPoint anchor = to_world_px(px, py);
   zoom_ = nz;
@@ -161,6 +201,20 @@ void MapWidget::set_hover(float px, float py, bool inside) {
   hover_ = inside;
   hover_px_ = px;
   hover_py_ = py;
+}
+
+void MapWidget::set_cursor_time(double elapsed_s, bool show) {
+  cursor_ = show;
+  cursor_s_ = elapsed_s;
+}
+
+bool MapWidget::hovered_time(double& elapsed_s) const {
+  if (!hover_ || world_.empty()) return false;
+  G_ASSERT(world_.size() == track_.points.size());
+  const size_t i = nearest_point(hover_px_, hover_py_, s(kHoverPickPx));
+  if (i == SIZE_MAX) return false;
+  elapsed_s = track_.points[i].elapsed_s;
+  return true;
 }
 
 void MapWidget::drop_bitmaps() {
@@ -221,6 +275,7 @@ void MapWidget::render(ID2D1RenderTarget* rt) {
   draw_legend(rt);
   draw_scale_bar(rt);
   draw_attribution(rt);
+  if (cursor_ && !hover_) draw_cursor(rt);
   if (hover_) draw_hover(rt);
   rt->PopAxisAlignedClip();
 }
@@ -259,6 +314,15 @@ void MapWidget::draw_tiles(ID2D1RenderTarget* rt) {
   G_ASSERT(rt != nullptr && tiles_ != nullptr);
   G_ASSERT(zoom_ >= kMinZoom && zoom_ <= kMaxZoom);
   tiles_->clear_queue();
+  draw_layer(rt, base_, true);
+  for (size_t i = 0; i < overlays_.size() && i < kMaxProviders; ++i) {
+    draw_layer(rt, overlays_[i], false);
+  }
+}
+
+// One provider's tiles over the visible area; missing base tiles show a placeholder.
+void MapWidget::draw_layer(ID2D1RenderTarget* rt, size_t layer, bool placeholder) {
+  G_ASSERT(layer < tile_providers().size());
   const int n = tiles_at(zoom_);
   const double wp = world_px();
   const WorldPoint tl = to_world_px(rect_.left, rect_.top);
@@ -278,10 +342,10 @@ void MapWidget::draw_tiles(ID2D1RenderTarget* rt) {
       const D2D1_RECT_F dst =
           D2D1::RectF(std::round(origin.x), std::round(origin.y), std::round(origin.x) + size,
                       std::round(origin.y) + size);
-      ID2D1Bitmap* bmp = tile_bitmap(rt, TileKey{zoom_, wrapped, ty});
+      ID2D1Bitmap* bmp = tile_bitmap(rt, TileKey{zoom_, wrapped, ty, static_cast<int>(layer)});
       if (bmp != nullptr) {
         rt->DrawBitmap(bmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-      } else {
+      } else if (placeholder) {
         brush_->SetColor(to_d2d(kTilePlaceholder));
         rt->FillRectangle(dst, brush_.Get());
       }
@@ -444,14 +508,13 @@ void MapWidget::draw_scale_bar(ID2D1RenderTarget* rt) {
 }
 
 void MapWidget::draw_attribution(ID2D1RenderTarget* rt) {
-  const std::wstring attribution = L"© OpenStreetMap contributors";
-  const float w = measure(attribution, false) + s(kPad * 2);
+  const std::wstring credit = attribution();
+  const float w = std::min(measure(credit, false) + s(kPad * 2), rect_.right - rect_.left);
   const D2D1_RECT_F box = D2D1::RectF(rect_.right - w, rect_.bottom - s(kLine + 4.0f),
                                       rect_.right, rect_.bottom);
   brush_->SetColor(to_d2d(kBox));
   rt->FillRectangle(box, brush_.Get());
-  text(rt, attribution, box, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
-       kText);
+  text(rt, credit, box, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, kText);
 }
 
 size_t MapWidget::nearest_point(float px, float py, float max_dist_px) const {
@@ -469,6 +532,21 @@ size_t MapWidget::nearest_point(float px, float py, float max_dist_px) const {
     }
   }
   return best;
+}
+
+void MapWidget::draw_cursor(ID2D1RenderTarget* rt) {
+  G_ASSERT(rt != nullptr && cursor_);
+  G_ASSERT(world_.size() == track_.points.size());
+  const size_t i = index_at_time(track_.points, cursor_s_);
+  if (i == SIZE_MAX) return;
+  const D2D1_POINT_2F at = to_px(world_[i]);
+  const float r = s(kMarkerRadius + 1.0f);
+  brush_->SetColor(to_d2d(kHalo));
+  rt->FillEllipse(D2D1::Ellipse(at, r + s(2.5f), r + s(2.5f)), brush_.Get());
+  brush_->SetColor(to_d2d(kText));
+  rt->FillEllipse(D2D1::Ellipse(at, r, r), brush_.Get());
+  brush_->SetColor(to_d2d(kLap));
+  rt->FillEllipse(D2D1::Ellipse(at, r * 0.4f, r * 0.4f), brush_.Get());
 }
 
 void MapWidget::draw_hover(ID2D1RenderTarget* rt) {

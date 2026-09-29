@@ -32,7 +32,10 @@ struct DetectParams {
   double hysteresis_bpm = 12.0;       // reversal needed to flip rising/falling
   double min_rise_bpm = 20.0;         // rise amplitude that counts as a shift
   double min_shift_s = 20.0;
-  double max_shift_s = 240.0;
+  // Trough-to-peak length. 330 s keeps the real long shifts (p99 of all
+  // qualifying rises is ~320 s; 240 s dropped 5 % of them) while the
+  // warm-up skate, usually 6-15 min, still fails it.
+  double max_shift_s = 330.0;
   // A shift's peak must reach median + peak_fraction * (p95 - median) of the
   // smoothed trace; this rejects the warm-up skate and the walk to the car.
   double peak_fraction = 0.25;

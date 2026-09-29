@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "layer_menu.h"
+#include "map/map_settings.h"
 #include "map/map_widget.h"
 #include "map/tile_cache.h"
 #include "plot/calendar_widget.h"
@@ -55,6 +57,8 @@ constexpr int kIdmExit = 302;
 constexpr double kWheelZoomPerNotch = 0.8;
 constexpr double kKeyZoom = 0.7;
 constexpr float kKeyPanFrac = 0.1f;
+constexpr float kMapShare = 0.42f;      // Activity view: map's share of the plot width
+constexpr int kMapMinWidthCss = 320;
 
 enum class Mode { kDay, kTrends, kActivity, kHockey, kCalendar, kMap, kSki, kCompare, kSleep };
 
@@ -69,6 +73,8 @@ struct App {
   plot::CalendarWidget calendar;
   map::MapWidget mapw;
   map::TileCache tiles;
+  map::MapSettings map_settings;  // from gview.ini beside the exe (keys + chosen layers)
+  std::filesystem::path ini_path;
   ComPtr<IWICImagingFactory> wic;
   store::Db db;
   std::filesystem::path db_path;
@@ -83,7 +89,9 @@ struct App {
   std::vector<gview::NightEntry> nights;
   double hockey_hr_max = 190.0;
   float scale = 1.0f;
+  bool activity_map = false;  // Activity view: selected activity has GPS, map shown beside charts
   bool dragging = false;
+  bool drag_map = false;      // the current drag pans the map, not the chart
   int drag_last_x = 0;
   int drag_last_y = 0;
   bool tracking_mouse = false;
@@ -98,6 +106,45 @@ RECT plot_rect(const App& a) {
   GetClientRect(a.hwnd, &rc);
   rc.left += static_cast<LONG>(kListWidthCss * a.scale);
   return rc;
+}
+
+// Activity view with a GPS track: charts left, map right.
+bool split_view(const App& a) { return a.mode == Mode::kActivity && a.activity_map; }
+
+LONG split_x(const App& a) {
+  const RECT r = plot_rect(a);
+  G_ASSERT(r.right >= r.left);
+  const LONG map_w = static_cast<LONG>(static_cast<float>(r.right - r.left) * kMapShare);
+  return r.right - std::max(map_w, static_cast<LONG>(kMapMinWidthCss * a.scale));
+}
+
+RECT chart_rect(const App& a) {
+  RECT r = plot_rect(a);
+  if (split_view(a)) r.right = std::max(r.left, split_x(a));
+  return r;
+}
+
+RECT map_rect(const App& a) {
+  RECT r = plot_rect(a);
+  if (split_view(a)) r.left = std::max(r.left, split_x(a));
+  return r;
+}
+
+bool in_rect(const RECT& r, int x, int y) {
+  return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+}
+
+D2D1_RECT_F to_rectf(const RECT& r) {
+  return D2D1::RectF(static_cast<float>(r.left), static_cast<float>(r.top),
+                     static_cast<float>(r.right), static_cast<float>(r.bottom));
+}
+
+// Gives each widget its share of the plot area; call whenever the split can change.
+void apply_rects(App& a) {
+  G_ASSERT(a.hwnd != nullptr);
+  a.widget.set_rect(to_rectf(chart_rect(a)));
+  a.calendar.set_rect(to_rectf(plot_rect(a)));
+  a.mapw.set_rect(to_rectf(map_rect(a)));
 }
 
 void set_title(App& a, const std::string& sub) {
@@ -126,12 +173,7 @@ void layout(App& a) {
   GetClientRect(a.hwnd, &rc);
   const int list_w = static_cast<int>(kListWidthCss * a.scale);
   MoveWindow(a.list, 0, 0, list_w, rc.bottom - rc.top, TRUE);
-  const RECT pr = plot_rect(a);
-  const D2D1_RECT_F prf = D2D1::RectF(static_cast<float>(pr.left), static_cast<float>(pr.top),
-                                      static_cast<float>(pr.right), static_cast<float>(pr.bottom));
-  a.widget.set_rect(prf);
-  a.calendar.set_rect(prf);
-  a.mapw.set_rect(prf);
+  apply_rects(a);
   if (a.rt) {
     a.rt->Resize(D2D1::SizeU(static_cast<UINT32>(rc.right - rc.left),
                              static_cast<UINT32>(rc.bottom - rc.top)));
@@ -224,7 +266,13 @@ bool figure_for_selection(App& a, const std::vector<int>& picked, plot::Figure& 
       if (idx < a.ranges.size()) fig = gview::load_trends(a.db, a.ranges[idx].days);
       return true;
     case Mode::kActivity:
-      if (idx < a.activities.size()) fig = gview::load_activity(a.db, a.activities[idx]);
+      if (idx < a.activities.size()) {
+        fig = gview::load_activity(a.db, a.activities[idx]);
+        map::Track t = gview::load_track(a.db, a.activities[idx]);
+        a.activity_map = !t.points.empty();
+        apply_rects(a);  // set_track fits to the map's rect, so size it first
+        if (a.activity_map) a.mapw.set_track(std::move(t));
+      }
       return true;
     case Mode::kHockey:
       if (idx < a.games.size()) {
@@ -273,6 +321,9 @@ void show_selection(App& a) {
   G_ASSERT(a.list != nullptr);
   plot::Figure fig;
   std::string title;
+  a.activity_map = false;
+  a.mapw.set_cursor_time(0.0, false);
+  apply_rects(a);
   if (figure_for_selection(a, selected_indices(a), fig, title)) {
     title = fig.title;
     a.widget.set_figure(std::move(fig));
@@ -327,6 +378,7 @@ void paint(App& a) {
     a.mapw.render(a.rt.Get());
   } else {
     a.widget.render(a.rt.Get());
+    if (split_view(a)) a.mapw.render(a.rt.Get());
   }
   const HRESULT hr = a.rt->EndDraw();
   if (hr == D2DERR_RECREATE_TARGET) {
@@ -348,9 +400,10 @@ void move_list_selection(App& a, int delta) {
   show_selection(a);
 }
 
-HMENU build_menu() {
+HMENU build_menu(const App& a) {
   HMENU bar = CreateMenu();
   HMENU view = CreatePopupMenu();
+  G_REQUIRE_RET(bar != nullptr && view != nullptr, nullptr);
   AppendMenuW(view, MF_STRING, kIdmViewDay, L"&Day\t1");
   AppendMenuW(view, MF_STRING, kIdmViewTrends, L"&Trends\t2");
   AppendMenuW(view, MF_STRING, kIdmViewActivity, L"&Activity\t3");
@@ -364,6 +417,9 @@ HMENU build_menu() {
   AppendMenuW(view, MF_STRING, kIdmFit, L"&Fit to data\tHome");
   AppendMenuW(view, MF_STRING, kIdmZoomIn, L"Zoom &in\t+");
   AppendMenuW(view, MF_STRING, kIdmZoomOut, L"Zoom &out\t-");
+  AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(view, MF_POPUP, reinterpret_cast<UINT_PTR>(gview::build_layer_menu(a.map_settings)),
+              L"Map &layer  (L cycles)");
   HMENU data = CreatePopupMenu();
   AppendMenuW(data, MF_STRING, kIdmReload, L"&Reload database\tF5");
   AppendMenuW(data, MF_SEPARATOR, 0, nullptr);
@@ -395,10 +451,35 @@ bool in_plot(const App& a, int x, int y) {
 
 // ---- message handlers, one per message, so wnd_proc stays a dispatch table
 
-void set_all_hover(App& a, float x, float y, bool inside) {
-  a.widget.set_hover(x, y, inside);
-  a.calendar.set_hover(x, y, inside);
-  a.mapw.set_hover(x, y, inside);
+// Activity view with a map: hovering either side marks the same moment on
+// the other (chart time -> map marker, track point -> chart cursor).
+void set_split_hover(App& a, int x, int y, bool inside) {
+  G_ASSERT(split_view(a));
+  const bool on_chart = inside && in_rect(chart_rect(a), x, y);
+  const bool on_map = inside && in_rect(map_rect(a), x, y);
+  const float fx = static_cast<float>(x);
+  const float fy = static_cast<float>(y);
+  a.widget.set_hover(fx, fy, on_chart);
+  a.mapw.set_hover(fx, fy, on_map);
+  a.mapw.set_cursor_time(on_chart ? a.widget.px_to_x(fx) : 0.0, on_chart);
+  double t = 0.0;
+  if (on_map && a.mapw.hovered_time(t)) {
+    const RECT c = chart_rect(a);
+    a.widget.set_hover(a.widget.x_to_px(t), static_cast<float>(c.top + c.bottom) / 2.0f, true);
+  }
+}
+
+void set_all_hover(App& a, int x, int y, bool inside) {
+  if (split_view(a)) {
+    set_split_hover(a, x, y, inside);
+    return;
+  }
+  const float fx = static_cast<float>(x);
+  const float fy = static_cast<float>(y);
+  a.widget.set_hover(fx, fy, inside);
+  a.calendar.set_hover(fx, fy, inside);
+  a.mapw.set_hover(fx, fy, inside);
+  a.mapw.set_cursor_time(0.0, false);
 }
 
 void apply_scale(App& a) {
@@ -422,7 +503,8 @@ void on_create(App& a, HWND hwnd) {
   const BOOL subclassed = SetWindowSubclass(a.list, list_proc, 0, 0);
   G_ASSERT(subclassed);
   apply_scale(a);
-  if (!a.tiles.start(gutil::app_data_dir() / L"tiles", hwnd, kMsgTileReady)) {
+  a.mapw.set_layers(a.map_settings.base, a.map_settings.overlays);
+  if (!a.tiles.start(gutil::app_data_dir() / L"tiles", hwnd, kMsgTileReady, a.map_settings.keys)) {
     MessageBoxW(hwnd, L"Could not create the map tile cache directory; the Map view will be empty.",
                 L"Garmin viewer", MB_ICONWARNING);
   }
@@ -438,6 +520,17 @@ void on_dpi_changed(App& a, HWND hwnd, WPARAM wp, LPARAM lp) {
   SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top,
                SWP_NOZORDER | SWP_NOACTIVATE);
   layout(a);
+}
+
+// Pushes the chosen map layers to the widget and the menu, and remembers them in gview.ini.
+void apply_layers(App& a) {
+  G_ASSERT(a.hwnd != nullptr);
+  a.mapw.set_layers(a.map_settings.base, a.map_settings.overlays);
+  gview::check_layer_menu(GetMenu(a.hwnd), a.map_settings);
+  if (!map::save_map_layers(a.ini_path, a.map_settings)) {
+    // Not fatal (e.g. the exe folder is read-only): the choice lasts this session.
+  }
+  InvalidateRect(a.hwnd, nullptr, FALSE);
 }
 
 // Returns the mode for a View menu id / digit key, or false if it is not one.
@@ -458,13 +551,18 @@ void on_command(App& a, HWND hwnd, WPARAM wp) {
     set_mode(a, m);
     return;
   }
+  size_t provider = 0;
+  if (gview::layer_command(id, provider)) {
+    if (map::choose_layer(a.map_settings, provider)) apply_layers(a);
+    return;
+  }
   switch (id) {
     case kIdmFit:
       a.widget.fit_x();
       break;
     case kIdmZoomIn:
     case kIdmZoomOut: {
-      const RECT r = plot_rect(a);
+      const RECT r = chart_rect(a);
       const float mid = static_cast<float>(r.left + r.right) / 2.0f;
       a.widget.zoom_at(mid, id == kIdmZoomIn ? kKeyZoom : 1.0 / kKeyZoom);
       break;
@@ -487,7 +585,7 @@ bool on_mouse_wheel(App& a, HWND hwnd, WPARAM wp, LPARAM lp) {
   ScreenToClient(hwnd, &pt);
   if (!in_plot(a, pt.x, pt.y) || a.mode == Mode::kCalendar) return false;
   const int notches = GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
-  if (a.mode == Mode::kMap) {
+  if (a.mode == Mode::kMap || (split_view(a) && in_rect(map_rect(a), pt.x, pt.y))) {
     a.mapw.zoom_step(static_cast<float>(pt.x), static_cast<float>(pt.y), notches > 0 ? 1 : -1);
   } else {
     double factor = 1.0;
@@ -506,6 +604,7 @@ bool on_button_down(App& a, HWND hwnd, LPARAM lp) {
   const int y = GET_Y_LPARAM(lp);
   if (!in_plot(a, x, y) || a.mode == Mode::kCalendar) return false;
   a.dragging = true;
+  a.drag_map = a.mode == Mode::kMap || (split_view(a) && in_rect(map_rect(a), x, y));
   a.drag_last_x = x;
   a.drag_last_y = y;
   SetCapture(hwnd);
@@ -523,7 +622,7 @@ void on_mouse_move(App& a, HWND hwnd, LPARAM lp) {
   if (a.dragging) {
     const int dx = x - a.drag_last_x;
     const int dy = y - a.drag_last_y;
-    if (a.mode == Mode::kMap) {
+    if (a.drag_map) {
       a.mapw.pan_pixels(static_cast<float>(dx), static_cast<float>(dy));
     } else if (dx != 0) {
       a.widget.pan_pixels(static_cast<float>(dx));
@@ -531,7 +630,7 @@ void on_mouse_move(App& a, HWND hwnd, LPARAM lp) {
     a.drag_last_x = x;
     a.drag_last_y = y;
   }
-  set_all_hover(a, static_cast<float>(x), static_cast<float>(y), in_plot(a, x, y));
+  set_all_hover(a, x, y, in_plot(a, x, y));
   InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -541,16 +640,13 @@ bool on_key_down(App& a, WPARAM key) {
     set_mode(a, static_cast<Mode>(key - '1'));
     return true;
   }
-  const RECT r = plot_rect(a);
+  const RECT r = chart_rect(a);
   const float w = static_cast<float>(r.right - r.left);
   const float mid = static_cast<float>(r.left + r.right) / 2.0f;
   switch (key) {
     case VK_HOME:
-      if (a.mode == Mode::kMap) {
-        a.mapw.fit();
-      } else {
-        a.widget.fit_x();
-      }
+      if (a.mode == Mode::kMap || split_view(a)) a.mapw.fit();
+      if (a.mode != Mode::kMap) a.widget.fit_x();
       return true;
     case VK_LEFT: a.widget.pan_pixels(w * kKeyPanFrac); return true;
     case VK_RIGHT: a.widget.pan_pixels(-w * kKeyPanFrac); return true;
@@ -563,6 +659,10 @@ bool on_key_down(App& a, WPARAM key) {
     case VK_SUBTRACT:
     case VK_OEM_MINUS: a.widget.zoom_at(mid, 1.0 / kKeyZoom); return true;
     case VK_F5: reload(a); return true;
+    case 'L':
+      a.map_settings.base = map::next_base(a.map_settings);
+      apply_layers(a);
+      return true;
     default: return false;
   }
 }
@@ -594,7 +694,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_MOUSELEAVE:
       a->tracking_mouse = false;
-      set_all_hover(*a, 0.0f, 0.0f, false);
+      set_all_hover(*a, 0, 0, false);
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     case WM_KEYDOWN:
@@ -604,7 +704,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       }
       break;
     case kMsgTileReady:
-      if (a->mode == Mode::kMap) InvalidateRect(hwnd, nullptr, FALSE);
+      if (a->mode == Mode::kMap || split_view(*a)) InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     case WM_DESTROY:
       a->tiles.stop();
@@ -641,6 +741,8 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show) {
   auto app = std::make_unique<App>();
   g_app = app.get();
   app->db_path = resolve_db_path();
+  app->ini_path = map::sidecar_ini_path();
+  app->map_settings = map::load_map_settings(app->ini_path);
   if (!std::filesystem::exists(app->db_path)) {
     MessageBoxW(nullptr, (L"Database not found:\n" + app->db_path.wstring() +
                           L"\n\nRun `gsync sync` first, or pass --data <dir>.")
@@ -676,10 +778,14 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show) {
   wc.hIconSm = wc.hIcon;
   G_REQUIRE_RET(RegisterClassExW(&wc) != 0, 3);
 
-  const HWND hwnd = CreateWindowExW(0, kClassName, L"Garmin viewer", WS_OVERLAPPEDWINDOW,
+  // WS_CLIPCHILDREN: paint() clears and redraws the whole Direct2D target on
+  // every hover move; without it that repaint covers the list box each time.
+  const HWND hwnd = CreateWindowExW(0, kClassName, L"Garmin viewer",
+                                    WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                                     CW_USEDEFAULT, CW_USEDEFAULT, 1400, 900, nullptr,
-                                    build_menu(), hinst, nullptr);
+                                    build_menu(*app), hinst, nullptr);
   G_REQUIRE_RET(hwnd != nullptr, 3);
+  gview::check_layer_menu(GetMenu(hwnd), app->map_settings);
   ShowWindow(hwnd, show);
   UpdateWindow(hwnd);
 

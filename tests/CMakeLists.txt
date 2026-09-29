@@ -9,6 +9,8 @@ add_executable(garmin_tests
   test_decimate.cpp
   test_hockey.cpp
   test_mercator.cpp
+  test_map_track.cpp
+  test_tile_provider.cpp
   test_ski.cpp
   test_bp_import.cpp
   test_importer_json.cpp)

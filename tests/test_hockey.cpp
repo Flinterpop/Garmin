@@ -32,7 +32,51 @@ void synth_game(int shifts, std::vector<double>& x, std::vector<double>& y) {
   }
 }
 
+// Appends one long shift shaped like the 28 Sep 2026 one: a gentle slide to
+// 94 bpm on the bench (below synth_game's 100 baseline, so the trough sits
+// where the climb starts), a fast climb to ~158, a plateau, a push to 172
+// ending `rise_s` after the climb began, then recovery on the bench.
+void append_long_shift(int rise_s, std::vector<double>& x, std::vector<double>& y) {
+  const int t0 = x.empty() ? 0 : static_cast<int>(x.back()) + 1;
+  const int push_s = 40;
+  const int total = 60 + rise_s + 240;
+  for (int k = 0; k < total; ++k) {
+    double hr = 0.0;
+    const int r = k - 60;  // seconds into the climb
+    if (r < 0) {
+      hr = 100.0 - 6.0 * k / 60.0;
+    } else if (r < 40) {
+      hr = 94.0 + 64.0 * r / 40.0;
+    } else if (r < rise_s - push_s) {
+      hr = 158.0 + 4.0 * (r - 40) / (rise_s - push_s - 40);
+    } else if (r < rise_s) {
+      hr = 162.0 + 10.0 * (r - (rise_s - push_s)) / push_s;
+    } else {
+      hr = 100.0 + 72.0 * std::exp(-(r - rise_s) / 50.0);
+    }
+    x.push_back(static_cast<double>(t0 + k));
+    y.push_back(hr + ((k % 7) - 3) * 0.8);
+  }
+}
+
 }  // namespace
+
+TEST_CASE("detect_shifts keeps a 4.5 min shift and rejects a warm-up-length rise") {
+  std::vector<double> x;
+  std::vector<double> y;
+  synth_game(10, x, y);
+  append_long_shift(270, x, y);  // 28 Sep 2026: 257 s, dropped by the old 240 s cap
+  const auto shifts = hockey::detect_shifts(x, y);
+  REQUIRE(shifts.size() == 11);
+  const double len = shifts.back().end - shifts.back().start;
+  CHECK(len > 240.0);
+  CHECK(len < 300.0);
+  CHECK(shifts.back().hr_peak > 165.0);
+
+  synth_game(10, x, y);
+  append_long_shift(420, x, y);  // warm-up skate length
+  CHECK(hockey::detect_shifts(x, y).size() == 10);
+}
 
 TEST_CASE("smooth is a centred moving average that preserves constants") {
   std::vector<double> x;

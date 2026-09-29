@@ -2,3 +2,5 @@ build/
 data/
 *.user
 .vs/
+# gview.ini holds map API keys (Google, Azure Maps, Thunderforest): never commit or ship it
+*.ini

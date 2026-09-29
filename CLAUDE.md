@@ -2,7 +2,9 @@
 
 *Last updated: 28 Sep 2026*
 
-Personal health-data tooling: C++20 / Win32, no UI framework. **This repository is not export-controlled** (it is the owner's own fitness data and open-source code under MIT), unlike the other repositories on this machine. Still keep work local; the only outbound traffic is to Garmin Connect and OpenStreetMap tiles.
+Personal health-data tooling: C++20 / Win32, no UI framework. **This repository is not export-controlled** (it is the owner's own fitness data and open-source code under MIT), unlike the other repositories on this machine. Still keep work local; the only outbound traffic is to Garmin Connect and the map tile servers (OpenStreetMap by default; the providers in `src/map/tile_provider.cpp` when chosen in View → Map layer).
+
+**`gview.ini` (beside `gview.exe`) holds the user's map API keys.** Never commit it, never put it in a release zip, never paste its contents anywhere. `*.ini` is gitignored; check `git status` and the zip listing for it before every commit and release.
 
 ## Build and test
 
@@ -19,7 +21,7 @@ ctest --preset debug                # Catch2, must stay at 100 %
 
 - `src/util` assertions (`G_ASSERT`, `G_REQUIRE_RET`, `G_REQUIRE_VOID`), time, CNG/DPAPI, zip, files
 - `src/fit` FIT decoder written from the spec; `src/gc` WinHTTP + OAuth1 Garmin Connect client; `src/store` SQLite schema + importers
-- `src/plot` Direct2D plot engine (`PlotWidget`) and `CalendarWidget`; `src/map` Web Mercator, OSM tile cache, `MapWidget`; `src/analysis` hockey shifts, ski runs
+- `src/plot` Direct2D plot engine (`PlotWidget`) and `CalendarWidget`; `src/map` Web Mercator, tile providers + `gview.ini` settings, tile cache (2 workers, per-provider folders), `MapWidget`; `src/analysis` hockey shifts, ski runs
 - `apps/gsync` CLI, `apps/gview` viewer (`queries*.cpp` build a `plot::Figure` per view), `apps/fitdump`
 - `tests` one file per module; analysis modules are tested on synthetic traces
 

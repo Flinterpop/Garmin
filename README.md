@@ -6,117 +6,75 @@
 [release-latest]: https://github.com/Flinterpop/Garmin/releases/latest
 [license-badge]: https://img.shields.io/badge/license-MIT-green
 
-*Last updated: 18 Sep 2026*
+*Last updated: 29 Sep 2026*
 
 <img src="docs/icon-256.png" alt="app icon" width="96" align="right" />
 
-Local, C++/Win32 tooling for pulling health data off Garmin devices and out of Garmin Connect, and keeping it in a SQLite database shaped for plotting. No Python, no cloud service of our own: everything runs on this machine and talks only to Garmin.
+A Windows viewer for your own Garmin health data. It downloads everything Garmin Connect holds about your days, nights and activities (heart rate, sleep, stress and Body Battery, HRV, weight and body composition, every activity with its GPS track), keeps it in a local SQLite database, and shows it in ten views, from a single day to years of trends, hockey shifts, ski runs and a 3D map of any GPS activity. Everything runs on your PC: there is no account or cloud service of our own, and the only traffic goes to Garmin and to the map-tile servers.
 
 <img width="2511" height="890" alt="image" src="https://github.com/user-attachments/assets/0f1d0201-dd61-40d7-854b-219ef89385ef" />
 
 <img width="1380" height="890" alt="image" src="https://github.com/user-attachments/assets/f2ff7c5c-25ae-4d11-9169-01d8840a0df3" />
 
+Written in C++20 on plain Win32, Direct2D and Direct3D 11, with no UI framework, no runtime to install and no Python.
 
-Three executables:
+## Getting started
 
-- **`gsync`** — signs in to Garmin Connect the way the mobile app does, pulls daily summaries, heart rate, sleep, stress / Body Battery, HRV, body composition (the Index scale), the activity list, per-activity FIT files and the daily wellness (monitoring) FIT files, and imports it all into `garmin.db`. Also imports FIT files copied straight off a watch over USB.
-- **`fitdump`** — inspects a single FIT file: summary, per-message counts, session line, and optional full dump to stdout or a long-format CSV.
-- **`gview`** — Win32 + Direct2D viewer over `garmin.db` with ten views: **Day** (heart rate, stress, Body Battery, sleep stages, respiration, HRV on one time axis), **Trends** (resting HR, HRV, sleep hours and score, weight in lb, steps over 30 days to everything), **Activity** (HR, speed, altitude, cadence, power, temperature against elapsed time, laps as markers; activities with GPS get the map beside the charts, and hovering either one marks the same moment on the other), **Hockey** (per-game shift detection from the HR trace with on-ice bands, HR zones, shift lengths and peak HR, plus a season overview across every game), **Calendar** (month grid with steps, resting HR, Body Battery range, sleep score and the day's activities), **Map** (GPS activities on OpenStreetMap tiles, track coloured by heart rate, start/finish/lap markers, scale bar, hover readout), **Ski** (runs and lifts detected from the altitude profile: per-run vertical, top speed and HR, plus a season overview), **Compare** (Ctrl-click two activities to overlay HR, speed, altitude and cadence), **Sleep** (one night: hypnogram, HR/HRV, respiration/SpO2/stress) and **3D map** (a GPS activity over real terrain: the selected map layer draped on elevation data, the track as a heart-rate-coloured ribbon, orbit camera, adjustable height exaggeration; Direct3D 11). Wheel zooms, drag pans, hover shows every value at the cursor. Trends carry a trailing 30-day mean ± 1 σ band for resting HR, HRV and sleep hours with days beyond 2 σ flagged, and a blood-pressure panel when Omron CSV exports are present.
+1. Download `Garmin-vX.Y.Z-win64.zip` from [Releases][release-latest] and unzip it into a folder of your choice, for example `C:\GarminSync`. Windows 10 or 11, 64-bit.
+2. Run **`gview.exe`**. The first time, it offers to **log in to Garmin Connect** (your email, password, and the security code Garmin sends if your account uses one) and downloads the last 30 days; or, if you used v0.1.3 or earlier, to **copy your data from the previous version**.
+3. Tick **Data → Download new data every morning** so it stays current on its own.
 
-## Status
+No command line is needed for any of this. The folder also holds `gsync.exe`, which the morning download runs, and `fitdump.exe`, a FIT file inspector for the curious; you never have to start either.
 
-| Piece | State |
-|---|---|
-| FIT decoder (`src/fit`) | Done; verified against Garmin-native and Zwift activity files, 10 unit tests |
-| Garmin Connect login + endpoints (`src/gc`) | Done; verified against a live account (login with MFA, all daily endpoints, weight, activities, wellness FIT zips) |
-| SQLite store + importers (`src/store`) | Done; verified on live JSON and on 208 files copied off a fenix 7 |
-| Plot viewer (`src/plot`, `apps/gview`) | Done; own Direct2D plot engine, five views, verified on the live database |
-| Hockey analysis (`src/analysis`) | Done; shift detection tuned on real games |
-| Map (`src/map`) | Done; OSM tiles + HR-coloured tracks, verified on runs and ski days |
-| Ski analysis, Compare, Sleep, baselines, blood pressure | Done |
-| Nightly sync task, app icon, MIT license, public releases | Done |
+## Views
+
+Press the number key or pick from the **View** menu. The list on the left chooses the day, activity, game or period; the mouse wheel zooms, dragging pans, hovering shows every value at the cursor, `Home` fits.
+
+| Key | View | Shows |
+|---|---|---|
+| `1` | Day | Heart rate, stress, Body Battery, sleep stages, respiration and HRV on one time axis |
+| `2` | Trends | Resting HR, HRV, sleep, weight (lb), steps and blood pressure over 30 days to everything |
+| `3` | Activity | HR, speed, altitude, cadence, power, temperature; laps as markers; the map beside the charts |
+| `4` | Hockey | Shifts detected from the heart rate, HR zones, shift lengths, plus a season overview |
+| `5` | Calendar | A month grid of steps, resting HR, Body Battery, sleep score and the day's activities |
+| `6` | Map | A GPS activity on the chosen map layer, the track coloured by heart rate |
+| `7` | Ski | Runs and lifts from the altitude profile: vertical, top speed and HR per run, plus a season |
+| `8` | Compare | Two activities (Ctrl-click the second) overlaid |
+| `9` | Sleep | One night: hypnogram, HR and HRV, respiration, SpO2, stress |
+| `0` | 3D map | A GPS activity over real terrain, the map draped on it, the track as a heart-rate ribbon |
 
 Notes:
 
-- The Connect API is Garmin's unofficial app API (the same one `garth` / `python-garminconnect` use). Garmin can change it without notice; when that happens `gsync get <path>` is the debugging tool. The wellness-zip endpoint answers Cloudflare 504 for older dates fairly often; `gsync` retries 5xx with backoff and leaves failed days unmarked so the next sync picks them up.
-- Weight is stored in kg and displayed in pounds.
-- The map fetches tiles from the selected map layer's server (OpenStreetMap by default; see [Map layers](#map-layers)), and the 3D map also fetches elevation tiles from AWS Terrain Tiles (`s3.amazonaws.com/elevation-tiles-prod`, public, no key). That is the only traffic that does not go to Garmin. Every provider gets an identifying User-Agent, at most two connections and only the tiles currently on screen, as the OSM tile usage policy asks; tiles are cached on disk in `tiles\` beside the executables except where the provider's terms forbid it (Google, Azure Maps).
-- The OAuth consumer key pair is fetched from the public location `garth` publishes, or can be supplied via `GARMIN_OAUTH_CONSUMER_KEY` / `GARMIN_OAUTH_CONSUMER_SECRET`.
+- **Trends** add a trailing 30-day mean ± 1 σ band for resting HR, HRV and sleep hours and flag days beyond 2 σ; the blood-pressure panel appears once Omron CSV exports have been imported.
+- **Activity**: with GPS, hovering the charts marks the moment on the map and hovering the track marks it on the charts.
+- **3D map**: left-drag orbits, right-drag pans, wheel zooms, `Home` resets the camera, `E` cycles height exaggeration (×1 / 1.5 / 2 / 3). Needs Direct3D 11; without it the view falls back to the 2D map.
+- **Other keys**: `Up` / `Down` step through the list, `+` / `-` zoom, `L` cycles the map layer, `F5` reloads, `F6` syncs.
+- Weight is stored in kg and shown in pounds.
 
-## Build
+## The Data menu
 
-Requirements: Visual Studio 2026 (MSVC), CMake 3.25+, vcpkg at `C:\vcpkg` with the `x64-windows-static` ports `nlohmann-json`, `zlib`, `sqlite3`, `catch2`.
-
-```powershell
-cmake --preset msvc-static
-cmake --build --preset release
-ctest --preset debug          # after cmake --build --preset debug
-```
-
-Executables land in `build\apps\Release\`. Everything compiles under `/W4 /WX` with static CRT; there are no runtime DLL dependencies.
-
-## Usage
-
-**Getting started needs no command line.** Unzip the release into a folder of your choice (for example `C:\GarminSync`) and run `gview.exe`. The first time, it offers to **log in to Garmin Connect** (email, password, and the security code if your account uses one) and downloads the last 30 days, or to **copy your data from an earlier version**. After that, everything is on the **Data** menu:
-
-| Data menu | What it does |
+| Item | What it does |
 |---|---|
 | **Sync now** (`F6`) | Downloads what is new since the last sync, with a progress window you can stop |
-| **Download new data every morning** | Ticks on a Windows scheduled task that syncs at 06:00 (or as soon as the PC is on and online); untick to remove it |
-| **Log in to Garmin Connect…** | A fresh login, e.g. after Garmin stops accepting the saved one |
-| **Profile → Add a person…** | Someone else's own login and data; **Profile** switches between people |
-| **Profile → Log out of Garmin Connect…** | Forgets the saved login (the downloaded data stays; the morning download is turned off) |
-| **Profile → Remove *name*…** | Deletes that person's login and downloaded data from this PC, after asking; their Garmin account is untouched |
-| **Import from watch…** | With the watch plugged in by USB: copies its activity, monitoring and sleep files and imports them |
+| **Download new data every morning** | A Windows scheduled task that syncs at 06:00, or as soon as the PC is on and online after that |
+| **Log in to Garmin Connect…** | A fresh login, e.g. after Garmin stops accepting the saved one; fills the gap afterwards |
+| **Profile** | Switch between people; **Add a person…**, **Log out…**, **Remove *name*…** |
+| **Import from watch…** | Copies and imports the files of a watch plugged in by USB |
 | **Import files…** | FIT files or Omron blood-pressure CSV exports from anywhere on the PC |
-| **Copy data from the previous version…** | Brings in a v0.1.3-or-earlier install from AppData (copies, never moves) |
+| **Copy data from the previous version…** | Brings in a v0.1.3-or-earlier install from AppData |
+| **Map API keys…** | Keys for the map layers that need one (see [Map layers](#map-layers)) |
 
-`gsync.exe` does the same from the command line and is what the morning task runs; you never need to start it yourself:
+Notes:
 
-```text
-gsync login                     # prompts for email, password, MFA code; login saved beside gsync.exe
-gsync --profile ann login       # a second person: their own login and database (see Profiles)
-gsync profiles                  # who is set up
-gsync whoami
-gsync sync --days 30            # daily data + wellness FIT + activities for the last 30 days
-gsync sync --from 2026-01-01 --to 2026-03-31 --activities 200
-gsync import-watch              # copy and import straight from a USB-connected watch (see below)
-gsync import <folder or .fit>   # FIT files you already have
-gsync stats
-gsync import-bp                 # Omron blood-pressure CSVs from Downloads (also runs during sync)
-gsync sync --days 3 --log sync.log                             # what the nightly task runs
-gsync get /usersummary-service/usersummary/daily/<displayName>?calendarDate=2026-09-17
+- **More than one person.** **Profile → Add a person…** asks for a short name (letters, digits, `_`, `-`), their own Garmin login, and downloads their last 30 days. Each person has their own login and data; **Profile** switches between them, the choice is remembered, and the title bar shows who you are looking at. The morning download is set per person.
+- **Log out** forgets the saved login but keeps the data. **Remove** deletes that person's login and downloaded data from this PC after a confirmation that says how much; their Garmin account is untouched. The main profile cannot be removed.
+- **Import from watch** works with watches that connect like a phone (MTP, e.g. the fenix 7, no drive letter) as well as older ones that appear as a drive: unlock the watch if it asks. It copies `Activity`, `Monitor`, `SUMMARY`, `Sleep`, `Metrics` and `HRVStatus` from the watch's `GARMIN` folder into `data\fit\watch\<watch name>\` and imports every FIT file; files already imported are skipped. Syncing already fetches the same data from Garmin Connect, so this is for what Connect does not have.
+- **Blood pressure**: CSVs named `readings_*.csv` in your Downloads folder (the export of [OmronBP](https://github.com/Flinterpop/OmronBP)) are imported on every sync; use **Import files…** for any saved elsewhere.
+- **Copy data from the previous version** copies the login, database and map tiles; it never overwrites anything and never deletes the AppData original.
 
-fitdump some.fit                # summary
-fitdump some.fit --print        # every message
-fitdump some.fit --csv out.csv  # mesg,timestamp,field,value,units
+## Map layers
 
-gview                           # opens the last profile used; --profile <name> or --data <dir> to pick
-```
-
-`gview` keys: `1` – `9` switch Day / Trends / Activity / Hockey / Calendar / Map / Ski / Compare / Sleep and `0` the 3D map (left-drag orbits, right-drag pans, wheel zooms, `Home` resets the camera, `E` cycles height exaggeration), `Up` / `Down` step through the list, mouse wheel zooms around the cursor, drag pans, `Home` fits, `+` / `-` zoom, `L` cycles the map layer, `F5` reloads after a sync.
-
-### Portable folder and profiles
-
-Everything lives **in the folder that holds `gsync.exe` and `gview.exe`**; nothing goes to AppData or depends on the Windows account. Copy the folder to move the whole install (a login copied to another PC needs a fresh `gsync login`).
-
-```text
-<exe folder>\gsync.exe, gview.exe, fitdump.exe
-<exe folder>\gview.ini                       map layers, API keys, last profile (never commit or share)
-<exe folder>\tokens.bin                      default profile: Garmin login (encrypted to this PC)
-<exe folder>\data\                           default profile: database and downloaded files
-<exe folder>\profiles\<name>\tokens.bin      another person's login
-<exe folder>\profiles\<name>\data\           and their database
-<exe folder>\tiles\                          map tile cache, shared by all profiles
-```
-
-In `gview`, **Data → Profile → Add a person…** asks for a name (letters, digits, `_`, `-`), their Garmin login and downloads their last 30 days; **Data → Profile** switches between people and the choice is remembered. Picking someone who has no data yet offers to log them in. On the command line every `gsync` command takes `--profile <name>`, before or after the command: `gsync --profile ann login`, `gsync --profile ann sync --days 30`.
-
-**Upgrading from v0.1.3 or earlier**, which kept everything in `%LOCALAPPDATA%\GarminSync`: start the new `gview.exe` and choose **Copy my data from the previous version** (or **Data → Copy data from the previous version…**; `gsync migrate-appdata` does the same). It copies the login, database and tiles beside the exe (never overwriting anything already there) and leaves the AppData copy untouched for you to delete when you are happy.
-
-### Map layers
-
-**View → Map layer** picks the base map for the Map view and the Activity view's map, plus optional route overlays; `L` cycles through the base maps you can use. The choice is remembered in `gview.ini` next to `gview.exe`.
+**View → Map layer** picks the base map for the Map, Activity and 3D views, plus optional route overlays; `L` cycles through the base maps you can use. The choice is remembered.
 
 | Layer | Key needed | Notes |
 |---|---|---|
@@ -125,11 +83,11 @@ In `gview`, **Data → Profile → Add a person…** asks for a name (letters, d
 | OpenTopoMap | no | contours and trails; zoom 17 max |
 | Esri World Imagery, Esri World Topo | no | Esri's terms formally expect an ArcGIS account |
 | Thunderforest OpenCycleMap, Outdoors | `thunderforest` | free hobby key from thunderforest.com |
-| Google Maps, Satellite, Terrain | `google` | Map Tiles API key (Google Cloud, billing enabled); tiles are not stored on disk |
-| Azure Maps road, imagery | `azure_maps` | Bing Maps' successor; Azure Maps key; tiles are not stored on disk |
+| Google Maps, Satellite, Terrain | `google` | Map Tiles API key (Google Cloud, billing enabled); not stored on disk |
+| Azure Maps road, imagery | `azure_maps` | Bing Maps' successor; Azure Maps key; not stored on disk |
 | Hiking / cycling routes overlay | no | Waymarked Trails, drawn over any base map |
 
-Enter keys with **Data → Map API keys…** (masked unless *Show keys* is ticked; an empty field removes that key). New keys take effect at once. They are saved in a sidecar `gview.ini` beside `gview.exe`, which you can also edit by hand. Layers whose key is missing are greyed out in the menu.
+Enter keys with **Data → Map API keys…** (masked unless *Show keys* is ticked; an empty field removes a key). They take effect at once and are saved in `gview.ini` beside `gview.exe`, which you can also edit by hand; layers whose key is missing are greyed out.
 
 ```ini
 [keys]
@@ -142,15 +100,61 @@ base = osm
 overlays = wmt_hiking
 ```
 
-**`gview.ini` holds secrets: never commit it or ship it.** `*.ini` is in `.gitignore`, and the release zip contains only the three executables, the README and the LICENSE.
+**`gview.ini` holds your keys: keep it private.** It is in `.gitignore`, and the release zip never contains it.
 
-Hockey shifts are detected from the smoothed HR trace: each rising leg (with 12 bpm hysteresis) whose peak clears the game's median HR is a shift, since HR climbs on the ice and falls on the bench. Zones are 60/70/80/90 % of a robust HR max (95th percentile of per-game maxima). Both live in `src/analysis/hockey.cpp` and are unit-tested on a synthetic game.
+## Where things are kept
 
-Options: `--profile <name>`, `--data <dir>` (default `data\` in the profile folder), `--no-fit`, `--force`, `--out <file>`.
+Everything lives **in the folder that holds the programs**; nothing goes to AppData or depends on the Windows account. Copy the folder to move the whole install.
 
-### Keeping it current
+```text
+<folder>\gview.exe, gsync.exe, fitdump.exe
+<folder>\gview.ini                       map layers, API keys, last person chosen (keep private)
+<folder>\tokens.bin                      main profile: Garmin login (encrypted to this PC)
+<folder>\data\                           main profile: database and downloaded files
+<folder>\profiles\<name>\tokens.bin      another person's login
+<folder>\profiles\<name>\data\           and their database
+<folder>\tiles\                          map tile cache, shared by everyone
+<folder>\sync.log                        what the morning download did
+```
 
-Tick **Data → Download new data every morning** in `gview`. That registers a Windows scheduled task, `GarminSync` (or `GarminSync-<name>` for another person), which runs `gsync sync --days 3 --log sync.log` from the program folder daily at 06:00 when you are logged on, catching up if the machine was off and skipping when offline. If a task of that name runs a copy of the program in a different folder, `gview` asks before pointing it here. The equivalent by hand (for another profile, add `--profile <name>` to the arguments, use its own log name and a different task name):
+Notes:
+
+- **The login** in `tokens.bin` is encrypted with Windows DPAPI to this PC: any Windows user here can use the folder, a copy on another PC cannot and needs a fresh login. Your password is never stored; it goes only to Garmin.
+- **Network traffic** goes to Garmin Connect and to the tile servers of the chosen map layer; the 3D map also fetches elevation from AWS Terrain Tiles (`s3.amazonaws.com/elevation-tiles-prod`, public, no key). Every tile server gets an identifying User-Agent, at most two connections and only the tiles on screen, as the OpenStreetMap tile policy asks; tiles are cached in `tiles\` except where the provider's terms forbid it (Google, Azure Maps).
+
+## Command line
+
+`gsync.exe` does everything the Data menu does, for scripting and for the morning task:
+
+```text
+gsync login                     # email, password, MFA code; login saved beside gsync.exe
+gsync --profile ann login       # another person's own login and database
+gsync profiles                  # who is set up
+gsync whoami
+gsync sync --days 30            # daily data, wellness FIT files and activities for the last 30 days
+gsync sync --from 2026-01-01 --to 2026-03-31 --activities 200
+gsync sync --days 3 --log sync.log                  # what the morning task runs
+gsync import-watch              # copy and import from a USB-connected watch
+gsync import <folder or .fit>   # FIT files you already have
+gsync import-bp [<csv>...]      # Omron CSVs (default: readings_*.csv in Downloads)
+gsync migrate-appdata           # copy a v0.1.3-or-earlier install from AppData
+gsync logout
+gsync stats
+gsync get /usersummary-service/usersummary/daily/<displayName>?calendarDate=2026-09-17
+
+fitdump some.fit                # summary
+fitdump some.fit --print        # every message
+fitdump some.fit --csv out.csv  # mesg,timestamp,field,value,units
+
+gview --profile <name>          # open a given person; --data <dir> opens a database folder directly
+```
+
+Notes:
+
+- Options: `--profile <name>` (before or after the command), `--data <dir>` (default `data\` in the profile folder), `--no-fit`, `--force`, `--out <file>`, `--log <file>`.
+- Exit codes: 0 ok, 1 some fetches failed, 2 usage error, 3 login required.
+- **Login lifetime.** The saved OAuth1 token lasts about a year; the bearer token it mints lasts about a day and is renewed automatically. If Garmin refuses the saved login outright, a sync stops after the first refusal, the log ends with `LOGIN REQUIRED` and the exit code is 3 (the task's *Last Run Result* shows `0x3`); log in again from the Data menu, which also downloads everything since the last good day.
+- **The morning task by hand**, equivalent to the Data-menu tick box (for another person add `--profile <name>`, their own log name and a task name such as `GarminSync-<name>`):
 
 ```powershell
 $dir = 'C:\GarminSync'   # the folder holding gsync.exe
@@ -162,17 +166,15 @@ $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interac
 Register-ScheduledTask -TaskName 'GarminSync' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force
 ```
 
-The OAuth1 token lasts about a year. The bearer token it mints lasts about a day and is renewed automatically; on MFA accounts Garmin rejects the `mfa_token` saved at login on later renewals (403 "The provided MFA token was invalid"), so `gsync` retries the exchange without it and drops it (before v0.1.2 this broke every nightly run from the second day on). If Garmin refuses the saved login outright, `gsync sync` stops after the first refusal, the log ends with `LOGIN REQUIRED`, and the exit code is 3 (the task's *Last Run Result* shows `0x3`). Use **Data → Log in to Garmin Connect…** in `gview` (or `gsync login`); it downloads everything since the last good day straight after, since the nightly job only looks back 3 days.
+## How it works
 
-Exit codes: 0 ok, 1 some fetches failed, 2 usage error, 3 login required.
-
-### Getting files off the watch
-
-Plug the watch in with its USB cable (unlock it if it asks) and choose **Data → Import from watch…** in `gview` (or run `gsync import-watch`). Recent watches (fenix 7 and similar) connect over **MTP**, like a phone, with no drive letter; the import goes through the Windows Shell the way Explorer does, so it works for those as well as for older watches that show up as a drive. It copies `Activity`, `Monitor`, `SUMMARY`, `Sleep`, `Metrics` and `HRVStatus` from the watch's `GARMIN` folder into `data\fit\watch\<watch name>\` of the current person, then imports every FIT file; files already imported are skipped.
-
-`Sleep`, `Metrics` and `HRVStatus` on the watch are usually empty because the watch purges them once Garmin Connect has them; `gsync sync` fetches the same files from Connect as the daily wellness zips.
-
-The login lives in `tokens.bin` in the profile folder, encrypted with DPAPI to this PC (any Windows user here can use it; a copy on another PC cannot). The password is never written anywhere. The OAuth1 token is good for about a year; bearer tokens are re-minted from it automatically.
+- **Garmin Connect.** `gsync` and `gview` sign in the way Garmin's mobile app does (SSO ticket → OAuth1 token → OAuth2 bearer, with MFA) and use the same unofficial app API as `garth` and `python-garminconnect`. Garmin can change it without notice; `gsync get <path>` is the debugging tool when that happens. The OAuth consumer key pair comes from the public location `garth` publishes, or from `GARMIN_OAUTH_CONSUMER_KEY` / `GARMIN_OAUTH_CONSUMER_SECRET`. The wellness-zip endpoint often answers Cloudflare 504 for older dates, so 5xx answers are retried with back-off and failed days are left unmarked for the next sync. On MFA accounts Garmin rejects the security token saved at login on later renewals, so renewal retries without it.
+- **FIT decoder**, written from the protocol specification rather than wrapping Garmin's SDK: fixed-size state (16 local definitions), no heap use per message, compressed-timestamp and `timestamp_16` expansion, developer fields resolved through `field_description`, chained files, CRC verification. Messages outside the built-in profile subset still decode and are reported by number. Verified on Garmin-native and Zwift activity files and on 208 files copied off a fenix 7.
+- **Plot engine**: Direct2D and DirectWrite, no third-party UI library. Series are decimated to the min/max per pixel column before drawing, so a day of 1 Hz data or a multi-hour activity redraws instantly while dragging. Tick generation and decimation are pure functions with unit tests.
+- **3D map**: Direct3D 11. Heights come from AWS Terrain Tiles (Terrarium PNGs) sampled into a 129 × 129 grid over the activity; the chosen map layer is draped on it as one mipmapped texture with anisotropic filtering; the track is a ribbon lifted just above the ground. The geometry (height decoding, local frame, mesh, ribbon, orbit camera) is pure and unit-tested.
+- **Hockey shifts** are found in the smoothed heart-rate trace, since HR climbs on the ice and falls on the bench: a shift is a rising leg (12 bpm hysteresis) lasting 20–330 s that climbs at least 20 bpm and peaks above a quarter of the way from the game's median HR to its 95th percentile, which leaves out the warm-up skate. Zones are 60/70/80/90 % of a robust HR max (the 95th percentile of per-game maxima).
+- **Ski runs and lifts** come from the vertical speed of the barometric altitude: sustained descents of at least 25 m are runs, sustained ascents are lifts, and a pause at the bottom ends a run.
+- **Sessions** recorded twice (the watch copy and the Connect download) are de-duplicated by start time, preferring the copy with records.
 
 ## Data layout
 
@@ -181,11 +183,10 @@ The login lives in `tokens.bin` in the profile folder, encrypted with DPAPI to t
 <data>\json\<kind>\<date>.json         raw API responses, kept for re-import / debugging
 <data>\fit\activities\<id>_ACTIVITY.fit
 <data>\fit\wellness\<date>\*.fit       daily monitoring / sleep / HRV files
+<data>\fit\watch\<watch name>\         files imported from a watch over USB
 ```
 
-### Tables
-
-All timestamps are Unix seconds (UTC). `source` distinguishes `api` (Garmin Connect JSON) from `fit` (decoded from FIT files) where both exist — the FIT data is the higher-resolution truth, the API data is Garmin's processed view.
+All timestamps are Unix seconds (UTC). `source` distinguishes `api` (Garmin Connect JSON) from `fit` (decoded from FIT files) where both exist: the FIT data is the higher-resolution truth, the API data is Garmin's processed view.
 
 | Table | Grain | Notes |
 |---|---|---|
@@ -197,39 +198,47 @@ All timestamps are Unix seconds (UTC). `source` distinguishes `api` (Garmin Conn
 | `respiration_sample`, `spo2_sample` | sample | from wellness FIT |
 | `hrv_daily`, `hrv_sample` | night / 5 min | RMSSD summary and readings |
 | `weight` | measurement | Index scale: weight, BMI, body fat/water %, bone/muscle mass, visceral fat, metabolic age |
-| `blood_pressure` | reading | Omron cuff readings from [OmronBP](https://github.com/Flinterpop/OmronBP) CSV exports (`readings_*.csv` in Downloads): systolic, diastolic, pulse, cuff user slot, device |
+| `blood_pressure` | reading | Omron cuff: systolic, diastolic, pulse, cuff user slot, device |
 | `activity` | activity | Connect summary; `fit_file_id` links to the decoded FIT |
 | `activity_session`, `activity_lap`, `activity_record`, `activity_hrv` | per FIT file | 1 Hz records (position, altitude, HR, cadence, speed, power, temperature), laps, R-R intervals |
 | `fit_file` | file | provenance: path, type, device, time created |
 | `sync_log` | kind × day | which days are already fetched (today is always refetched) |
 
-## Code health
+## Building from source
 
-The code follows NASA/JPL's Power of 10 as far as a desktop app sensibly can: every loop over data has a fixed upper bound, no recursion, assertions on preconditions (`G_ASSERT` stays on in Release), every return value checked, no function longer than a screen, single-level pointer indirection, `/W4 /WX`. `python tools/rot_scan.py` reports long functions, assertion-free functions, unbounded loops, TODO markers, dead declarations and dropped return values; it is run before each release and its output should stay empty apart from a handful of dispatch tables. The dependency set is four vcpkg ports (nlohmann-json, zlib, sqlite3, Catch2) plus the Windows SDK, so there is little to age.
+Requirements: Visual Studio 2026 (MSVC), CMake 3.25+, vcpkg at `C:\vcpkg` with the `x64-windows-static` ports `nlohmann-json`, `zlib`, `sqlite3`, `catch2`.
 
-## Code map
-
-```text
-src/util    assertions, time (FIT epoch), CNG/DPAPI/base64/percent-encoding, zip reader (zlib), console, files
-src/fit     fit_types.h (protocol constants), fit_crc, fit_profile (message/field names + scaling), fit_decoder
-src/gc      http_client (WinHTTP), oauth1 (RFC 5849 signing), token_store (DPAPI), gc_client (SSO login + endpoints)
-src/store   db (SQLite wrapper + schema), importer (JSON and FIT -> rows)
-src/plot    plot_types (Figure/Panel/Series model), ticks (nice numbers, local-time and elapsed axes), decimate (min/max per pixel column), plot_widget (Direct2D rendering, zoom/pan/hover), calendar_widget (month grid)
-src/analysis hockey (shift detection, HR zones, per-game stats), ski (run/lift detection, per-run and per-day stats)
-src/map     mercator (Web Mercator + tile maths), tile_cache (OSM download thread + disk cache), map_widget (Direct2D map)
-apps        fitdump, gsync, gview (Win32 window; queries*.cpp build Figures / MonthData from garmin.db)
-tests       Catch2: CRC, decoder (synthetic FIT files), OAuth1 (RFC test vectors), zip, time
+```powershell
+cmake --preset msvc-static
+cmake --build --preset release      # build\apps\Release\{gview,gsync,fitdump}.exe
+ctest --preset debug                # after cmake --build --preset debug
 ```
 
-Licensed under the [MIT License](LICENSE).
+Everything compiles under `/W4 /WX` with the static CRT; there are no runtime DLL dependencies beyond Windows itself. The programs keep their data beside themselves, so a build folder starts empty: run `gview.exe` from there and it offers the same first-run setup.
 
-The plot engine is plain Win32: Direct2D + DirectWrite from the Windows SDK, no third-party UI library. Series are decimated to the min/max per pixel column before drawing, so a day of 1 Hz data or a multi-hour activity redraws instantly while dragging. Tick generation and decimation are pure functions with unit tests.
+The code follows NASA/JPL's Power of 10 as far as a desktop app sensibly can: every loop over data has a fixed upper bound, no recursion, assertions on preconditions (`G_ASSERT` stays on in Release), every return value checked, no function longer than a screen, single-level pointer indirection. `python tools/rot_scan.py` reports long functions, assertion-free functions, unbounded loops, TODO markers, dead declarations and dropped return values; it runs before each release and should list nothing beyond a few dispatch tables. The dependency set is four vcpkg ports plus the Windows SDK, so there is little to age.
 
-The FIT decoder is written from the protocol specification rather than wrapping Garmin's SDK: fixed-size state (16 local definitions), no heap use per message, compressed-timestamp and `timestamp_16` expansion, developer fields resolved through `field_description`, chained files, CRC verification. Messages not in the built-in profile subset still decode; they are just reported by number.
+```text
+src/util     assertions, time (FIT epoch), CNG/DPAPI/base64/percent-encoding, zip reader (zlib), console, files and profile folders
+src/fit      fit_types.h (protocol constants), fit_crc, fit_profile (message/field names + scaling), fit_decoder
+src/gc       http_client (WinHTTP), oauth1 (RFC 5849 signing), token_store (DPAPI), gc_client (SSO login + endpoints)
+src/store    db (SQLite wrapper + schema), importer (JSON and FIT -> rows)
+src/sync     engine (the sync, cancellable, progress via callback), account (login, migration, catch-up range), files (FIT/CSV import), watch (MTP copy through the Shell)
+src/plot     plot_types (Figure/Panel/Series model), ticks, decimate, plot_widget (Direct2D, zoom/pan/hover), calendar_widget
+src/map      mercator, tile_provider (the layer table), map_settings (gview.ini), tile_cache (2 download workers), hr_color, map_widget
+src/map3d    terrain (pure geometry), renderer (Direct3D 11), view3d (child window, tiles, camera), image_decode (WIC)
+src/analysis hockey (shifts, zones, per-game stats), ski (runs and lifts, per-run and per-day stats)
+apps/gview   main (window, views, menus), queries*.cpp (a Figure per view), sync_ui (login, MFA, progress, welcome, add-person dialogs), schedule (morning task), layer_menu, keys_dialog
+apps/gsync   command line over src/sync
+apps/fitdump FIT inspector
+tests        Catch2, one file per module: FIT CRC and decoder, OAuth1 vectors, Connect client, zip, time, ticks, decimation, hockey, ski, Mercator, map tracks, tile providers, 3D terrain, profiles, sync, imports, blood pressure, JSON importers
+```
 
 ## Next steps
 
-1. Live chest-strap HR over BLE (WinRT GATT heart-rate service) for treadmill and Wahoo KICKR sessions — next up.
-2. Export the current view to PNG; auto-reload when the database changes.
-3. Read the watch over MTP from `gsync` directly (Windows Portable Devices API) instead of the PowerShell copy step.
-4. Backfill the years before 2024 (`gsync sync --from 2022-12-01`).
+1. Live chest-strap heart rate over Bluetooth LE (WinRT GATT heart-rate service) for treadmill and Wahoo KICKR sessions.
+2. Export the current view to PNG; reload automatically when the database changes.
+3. Download an arbitrary date range from `gview` (today: `gsync sync --from`), e.g. to backfill the years before 2024.
+4. 3D map: hover readout linked to the charts, and the route overlays draped on the terrain.
+
+Licensed under the [MIT License](LICENSE).

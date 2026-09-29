@@ -2,7 +2,7 @@
 
 [![Release][release-badge]][release-latest] [![License: MIT][license-badge]](LICENSE)
 
-[release-badge]: https://img.shields.io/badge/release-v0.1.3-blue
+[release-badge]: https://img.shields.io/badge/release-v0.1.4-blue
 [release-latest]: https://github.com/Flinterpop/Garmin/releases/latest
 [license-badge]: https://img.shields.io/badge/license-MIT-green
 

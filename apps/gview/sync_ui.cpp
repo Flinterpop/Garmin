@@ -4,8 +4,14 @@
 #include <mutex>
 #include <thread>
 
+#include <shobjidl.h>
+#include <wrl/client.h>
+
 #include "plot/plot_widget.h"  // widen()
+#include "store/db.h"
 #include "sync/account.h"
+#include "sync/files.h"
+#include "sync/watch.h"
 #include "sync_ui_ids.h"
 #include "util/assert.h"
 #include "util/file_util.h"
@@ -353,6 +359,65 @@ bool migrate_with_progress(HWND owner, const std::filesystem::path& profile_base
     return syncer::migrate_appdata(profile_base, report);
   };
   return run_progress(owner, L"Copying data from the previous version", job);
+}
+
+bool import_watch_with_progress(HWND owner, const std::filesystem::path& data_dir) {
+  const Job job = [&](const syncer::Report& report, const std::atomic<bool>& cancel) {
+    store::Db db;  // this thread's own connection; the viewer keeps its own
+    if (!syncer::open_db(data_dir, db, report)) return false;
+    const syncer::WatchImport w = syncer::import_from_watches(db, data_dir, report, &cancel);
+    if (w.watches == 0) {
+      report(true, "No Garmin watch found. Connect it with its USB cable, unlock it if it asks, and try again.");
+      return false;
+    }
+    report(false, syncer::strf("done: %d files, %lld rows from %d watch(es), %d failures", w.totals.files,
+                               static_cast<long long>(w.totals.rows), w.watches, w.totals.failures));
+    return w.totals.failures == 0;
+  };
+  return run_progress(owner, L"Importing from the watch", job);
+}
+
+bool pick_import_files(HWND owner, std::vector<std::filesystem::path>& out) {
+  Microsoft::WRL::ComPtr<IFileOpenDialog> dlg;
+  G_REQUIRE_RET(SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                           IID_PPV_ARGS(&dlg))),
+                false);
+  const COMDLG_FILTERSPEC types[] = {{L"Garmin FIT and Omron blood pressure files", L"*.fit;*.csv"},
+                                     {L"Garmin FIT files", L"*.fit"},
+                                     {L"Omron blood pressure exports", L"*.csv"}};
+  DWORD opts = 0;
+  dlg->GetOptions(&opts);
+  dlg->SetOptions(opts | FOS_ALLOWMULTISELECT | FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM);
+  dlg->SetFileTypes(ARRAYSIZE(types), types);
+  dlg->SetTitle(L"Import files");
+  Microsoft::WRL::ComPtr<IShellItemArray> items;
+  if (FAILED(dlg->Show(owner)) || FAILED(dlg->GetResults(&items))) return false;  // cancelled
+  DWORD n = 0;
+  items->GetCount(&n);
+  for (DWORD i = 0; i < n && i < syncer::kMaxImportFiles; ++i) {
+    Microsoft::WRL::ComPtr<IShellItem> item;
+    PWSTR path = nullptr;
+    if (FAILED(items->GetItemAt(i, &item)) || FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) continue;
+    out.emplace_back(path);
+    CoTaskMemFree(path);
+  }
+  return !out.empty();
+}
+
+bool import_files_with_progress(HWND owner, const std::filesystem::path& data_dir,
+                                const std::vector<std::filesystem::path>& files) {
+  const Job job = [&](const syncer::Report& report, const std::atomic<bool>& cancel) {
+    store::Db db;
+    if (!syncer::open_db(data_dir, db, report)) return false;
+    syncer::ImportTotals t;
+    for (size_t i = 0; i < files.size() && i < syncer::kMaxImportFiles && !cancel.load(); ++i) {
+      syncer::import_any(db, files[i], t, report);
+    }
+    report(false, syncer::strf("done: %d FIT files, %lld rows, %d failures", t.files,
+                               static_cast<long long>(t.rows), t.failures));
+    return t.failures == 0;
+  };
+  return run_progress(owner, L"Importing files", job);
 }
 
 bool ask_person_name(HWND owner, const std::filesystem::path& exe_dir, std::string& name) {

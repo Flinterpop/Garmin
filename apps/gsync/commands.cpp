@@ -16,6 +16,8 @@
 #include "store/importer.h"
 #include "sync/account.h"
 #include "sync/engine.h"
+#include "sync/files.h"
+#include "sync/watch.h"
 #include "util/assert.h"
 #include "util/console.h"
 #include "util/file_util.h"
@@ -37,6 +39,7 @@ constexpr char kUsage[] =
       "  whoami                show the signed-in account\n"
       "  sync                  pull daily data, activities and FIT files\n"
       "  import <path>...      import FIT files or directories (e.g. from the watch USB)\n"
+      "  import-watch          copy and import the data folders of a connected Garmin watch\n"
       "  get <api-path>        raw authenticated GET, prints JSON (debugging)\n"
       "  stats                 row counts in the local database\n"
       "  import-bp <csv>...    import Omron blood-pressure CSV exports\n"
@@ -115,45 +118,6 @@ std::string mfa_prompt() {
   std::string code;
   if (!gutil::read_line("MFA code: ", false, code)) return std::string();
   return code;
-}
-
-int import_one_path(store::Db& db, const std::filesystem::path& p, bool force, int& files,
-                    int64_t& rows) {
-  int failures = 0;
-  std::vector<std::filesystem::path> targets;
-  std::error_code ec;
-  if (std::filesystem::is_directory(p, ec)) {
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(p, ec)) {
-      if (!entry.is_regular_file()) continue;
-      std::string ext = entry.path().extension().string();
-      for (char& ch : ext) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-      if (ext == ".fit") targets.push_back(entry.path());
-      if (targets.size() >= 100000) break;
-    }
-  } else {
-    targets.push_back(p);
-  }
-  for (const std::filesystem::path& f : targets) {
-    std::vector<uint8_t> bytes;
-    if (!gutil::read_file(f, bytes)) {
-      std::fprintf(stderr, "  cannot read %s\n", f.string().c_str());
-      ++failures;
-      continue;
-    }
-    store::ImportCounts c;
-    std::string err;
-    if (!store::import_fit(db, f.string(), bytes, 0, force, c, err)) {
-      std::fprintf(stderr, "  %s\n", err.c_str());
-      ++failures;
-      continue;
-    }
-    ++files;
-    rows += c.rows;
-    std::printf("  %-60s %lld msgs %lld rows%s\n", f.string().c_str(),
-                static_cast<long long>(c.messages), static_cast<long long>(c.rows),
-                c.skipped ? " (already imported)" : "");
-  }
-  return failures;
 }
 
 }  // namespace
@@ -303,13 +267,25 @@ int run_import(const Options& o) {
   store::Db db;
   std::filesystem::path data_dir;
   if (!open_db(o, db, data_dir)) return 1;
-  int failures = 0;
-  int files = 0;
-  int64_t rows = 0;
-  for (const std::string& a : o.args) failures += import_one_path(db, a, o.force, files, rows);
-  std::printf("imported %d files, %lld rows, %d failures\n", files, static_cast<long long>(rows),
-              failures);
-  return failures == 0 ? 0 : 1;
+  syncer::ImportTotals t;
+  for (const std::string& a : o.args) syncer::import_fit_path(db, a, o.force, t, console_report);
+  std::printf("imported %d files, %lld rows, %d failures\n", t.files, static_cast<long long>(t.rows),
+              t.failures);
+  return t.failures == 0 ? 0 : 1;
+}
+
+int run_import_watch(const Options& o) {
+  store::Db db;
+  std::filesystem::path data_dir;
+  if (!open_db(o, db, data_dir)) return 1;
+  const syncer::WatchImport w = syncer::import_from_watches(db, data_dir, console_report, nullptr);
+  if (w.watches == 0) {
+    std::fprintf(stderr, "no Garmin watch found: connect it by USB (unlock it if asked) and try again\n");
+    return 1;
+  }
+  std::printf("imported %d files, %lld rows from %d watch(es), %d failures\n", w.totals.files,
+              static_cast<long long>(w.totals.rows), w.watches, w.totals.failures);
+  return w.totals.failures == 0 ? 0 : 1;
 }
 
 int run_get(const Options& o) {
@@ -353,18 +329,10 @@ int run_import_bp(const Options& o) {
   if (o.args.empty()) {
     failures = syncer::import_bp_downloads(db, rows, console_report);
   } else {
-    for (const std::string& a : o.args) {
-      std::string text;
-      store::ImportCounts c;
-      std::string err;
-      if (!gutil::read_text_file(a, text) || !store::import_bp_csv(db, text, c, err)) {
-        std::fprintf(stderr, "  %s: %s\n", a.c_str(), err.empty() ? "cannot read" : err.c_str());
-        ++failures;
-        continue;
-      }
-      rows += c.rows;
-      std::printf("  %s  %lld new readings\n", a.c_str(), static_cast<long long>(c.rows));
-    }
+    syncer::ImportTotals t;
+    for (const std::string& a : o.args) syncer::import_bp_file(db, a, t, console_report);
+    failures = t.failures;
+    rows = t.rows;
   }
   std::printf("imported %lld blood pressure readings, %d failures\n",
               static_cast<long long>(rows), failures);

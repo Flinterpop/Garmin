@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "sync/engine.h"
 
@@ -31,6 +32,16 @@ bool sync_with_progress(HWND owner, const std::filesystem::path& profile_base,
 
 // Copies a v0.1.3 AppData install into `profile_base`, with progress.
 bool migrate_with_progress(HWND owner, const std::filesystem::path& profile_base);
+
+// Copies and imports a connected watch's files into `data_dir`, with progress.
+bool import_watch_with_progress(HWND owner, const std::filesystem::path& data_dir);
+
+// Standard Open dialog for FIT files and Omron CSVs (multi-select); false if cancelled.
+bool pick_import_files(HWND owner, std::vector<std::filesystem::path>& out);
+
+// Imports the picked files into `data_dir`, with progress.
+bool import_files_with_progress(HWND owner, const std::filesystem::path& data_dir,
+                                const std::vector<std::filesystem::path>& files);
 
 // Asks for a new person's name; false if cancelled. Rejects names in use.
 bool ask_person_name(HWND owner, const std::filesystem::path& exe_dir, std::string& name);

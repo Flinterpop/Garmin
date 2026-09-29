@@ -41,6 +41,7 @@ int main(int argc, char** argv) {
   if (o.command == "whoami") return cmd::run_whoami(o);
   if (o.command == "sync") return cmd::run_sync(o);
   if (o.command == "import") return cmd::run_import(o);
+  if (o.command == "import-watch") return cmd::run_import_watch(o);
   if (o.command == "get") return cmd::run_get(o);
   if (o.command == "stats") return cmd::run_stats(o);
   if (o.command == "import-bp") return cmd::run_import_bp(o);

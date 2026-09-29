@@ -28,6 +28,7 @@ int run_logout(const Options& o);
 int run_whoami(const Options& o);
 int run_sync(const Options& o);
 int run_import(const Options& o);
+int run_import_watch(const Options& o);
 int run_get(const Options& o);
 int run_stats(const Options& o);
 int run_import_bp(const Options& o);

@@ -24,7 +24,7 @@ ctest --preset debug                # Catch2, must stay at 100 %
 ## Layout
 
 - `src/util` assertions (`G_ASSERT`, `G_REQUIRE_RET`, `G_REQUIRE_VOID`), time, CNG/DPAPI, zip, files
-- `src/fit` FIT decoder written from the spec; `src/gc` WinHTTP + OAuth1 Garmin Connect client; `src/store` SQLite schema + importers; `src/sync` the sync engine (progress via a `Report` callback, cancellable), login, migration and catch-up range, shared by gsync and gview
+- `src/fit` FIT decoder written from the spec; `src/gc` WinHTTP + OAuth1 Garmin Connect client; `src/store` SQLite schema + importers; `src/sync` the sync engine (progress via a `Report` callback, cancellable), login, migration and catch-up range, file import (`files.*`) and watch import over MTP through the Shell (`watch.*`, `IFileOperation`), shared by gsync and gview
 - `src/plot` Direct2D plot engine (`PlotWidget`) and `CalendarWidget`; `src/map` Web Mercator, tile providers + `gview.ini` settings, tile cache (2 workers, per-provider folders), `MapWidget`; `src/map3d` 3D map (pure geometry in `terrain.*`, Direct3D 11 `renderer.*`, child-window `view3d.*`); `src/analysis` hockey shifts, ski runs
 - `apps/gsync` CLI (thin wrapper over `src/sync`), `apps/gview` viewer (`queries*.cpp` build a `plot::Figure` per view; `sync_ui.*` login / MFA / progress / welcome / add-person dialogs, work on a worker thread; `schedule.*` the morning task via `schtasks /XML`), `apps/fitdump`
 - `tests` one file per module; analysis modules are tested on synthetic traces

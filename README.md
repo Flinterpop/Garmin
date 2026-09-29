@@ -60,6 +60,10 @@ Executables land in `build\apps\Release\`. Everything compiles under `/W4 /WX` w
 | **Download new data every morning** | Ticks on a Windows scheduled task that syncs at 06:00 (or as soon as the PC is on and online); untick to remove it |
 | **Log in to Garmin Connect…** | A fresh login, e.g. after Garmin stops accepting the saved one |
 | **Profile → Add a person…** | Someone else's own login and data; **Profile** switches between people |
+| **Profile → Log out of Garmin Connect…** | Forgets the saved login (the downloaded data stays; the morning download is turned off) |
+| **Profile → Remove *name*…** | Deletes that person's login and downloaded data from this PC, after asking; their Garmin account is untouched |
+| **Import from watch…** | With the watch plugged in by USB: copies its activity, monitoring and sleep files and imports them |
+| **Import files…** | FIT files or Omron blood-pressure CSV exports from anywhere on the PC |
 | **Copy data from the previous version…** | Brings in a v0.1.3-or-earlier install from AppData (copies, never moves) |
 
 `gsync.exe` does the same from the command line and is what the morning task runs; you never need to start it yourself:
@@ -71,7 +75,8 @@ gsync profiles                  # who is set up
 gsync whoami
 gsync sync --days 30            # daily data + wellness FIT + activities for the last 30 days
 gsync sync --from 2026-01-01 --to 2026-03-31 --activities 200
-gsync import <staging>\Activity <staging>\Monitor       # files copied off the watch (see below)
+gsync import-watch              # copy and import straight from a USB-connected watch (see below)
+gsync import <folder or .fit>   # FIT files you already have
 gsync stats
 gsync import-bp                 # Omron blood-pressure CSVs from Downloads (also runs during sync)
 gsync sync --days 3 --log sync.log                             # what the nightly task runs
@@ -158,20 +163,7 @@ Exit codes: 0 ok, 1 some fetches failed, 2 usage error, 3 login required.
 
 ### Getting files off the watch
 
-Recent watches (fenix 7 and similar) connect over **MTP**, not as a drive letter, so `gsync import` cannot read them directly. Copy the folders out through the Windows Shell first — this PowerShell snippet pulls `Activity`, `Monitor` and `SUMMARY` into the data directory, after which `gsync import` on that folder does the rest:
-
-```powershell
-$sh = New-Object -ComObject Shell.Application
-$dev = $sh.NameSpace(17).Items() | Where-Object Name -eq 'fenix 7'
-$g = ($dev.GetFolder.Items() | Select-Object -First 1).GetFolder.Items() | Where-Object Name -eq 'GARMIN'
-$base = 'C:\GarminSync\data\fit\watch\fenix7'   # data\ beside gsync.exe (or profiles\<name>\data\)
-foreach ($name in 'Activity','Monitor','SUMMARY') {
-  $src = $g.GetFolder.Items() | Where-Object Name -eq $name
-  $dst = Join-Path $base $name; New-Item -ItemType Directory -Force $dst | Out-Null
-  $sh.NameSpace($dst).CopyHere($src.GetFolder.Items(), 16 + 4 + 1024)   # async; wait for the file count
-}
-gsync import $base
-```
+Plug the watch in with its USB cable (unlock it if it asks) and choose **Data → Import from watch…** in `gview` (or run `gsync import-watch`). Recent watches (fenix 7 and similar) connect over **MTP**, like a phone, with no drive letter; the import goes through the Windows Shell the way Explorer does, so it works for those as well as for older watches that show up as a drive. It copies `Activity`, `Monitor`, `SUMMARY`, `Sleep`, `Metrics` and `HRVStatus` from the watch's `GARMIN` folder into `data\fit\watch\<watch name>\` of the current person, then imports every FIT file; files already imported are skipped.
 
 `Sleep`, `Metrics` and `HRVStatus` on the watch are usually empty because the watch purges them once Garmin Connect has them; `gsync sync` fetches the same files from Connect as the daily wellness zips.
 

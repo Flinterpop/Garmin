@@ -10,10 +10,12 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <cwchar>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "gc/token_store.h"
 #include "keys_dialog.h"
 #include "schedule.h"
 #include "sync/account.h"
@@ -67,6 +69,10 @@ constexpr int kIdmLogin = 305;
 constexpr int kIdmAddPerson = 306;
 constexpr int kIdmMigrate = 307;
 constexpr int kIdmNightly = 308;
+constexpr int kIdmImportWatch = 309;
+constexpr int kIdmImportFiles = 310;
+constexpr int kIdmLogout = 311;
+constexpr int kIdmRemovePerson = 312;
 constexpr int kFirstSyncDays = 30;  // a new login downloads this much history
 constexpr int kIdmProfileFirst = 500;  // + index into App::profile_names
 constexpr double kWheelZoomPerNotch = 0.8;
@@ -600,6 +606,11 @@ HMENU build_profile_menu(const App& a) {
   }
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(m, MF_STRING | state, kIdmAddPerson, L"&Add a person...");
+  AppendMenuW(m, MF_STRING | (syncer::has_login(profile_base_of(a.profile)) ? MF_ENABLED : MF_GRAYED), kIdmLogout,
+              L"Log &out of Garmin Connect...");
+  const bool removable = a.data_override.empty() && !a.profile.empty();  // the main profile stays
+  AppendMenuW(m, MF_STRING | (removable ? MF_ENABLED : MF_GRAYED), kIdmRemovePerson,
+              (L"&Remove " + profile_label(a.profile) + L"...").c_str());
   if (n > 0) {
     CheckMenuRadioItem(m, kIdmProfileFirst, kIdmProfileFirst + static_cast<UINT>(n) - 1,
                        kIdmProfileFirst + static_cast<UINT>(current), MF_BYCOMMAND);
@@ -636,6 +647,9 @@ HMENU build_menu(const App& a) {
               kIdmNightly, L"&Download new data every morning");
   AppendMenuW(data, MF_STRING, kIdmLogin, L"&Log in to Garmin Connect...");
   AppendMenuW(data, MF_POPUP, reinterpret_cast<UINT_PTR>(build_profile_menu(a)), L"&Profile");
+  AppendMenuW(data, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(data, MF_STRING, kIdmImportWatch, L"Import from &watch...");
+  AppendMenuW(data, MF_STRING, kIdmImportFiles, L"&Import files...");
   AppendMenuW(data, MF_STRING | (syncer::legacy_install_present() ? MF_ENABLED : MF_GRAYED), kIdmMigrate,
               L"&Copy data from the previous version...");
   AppendMenuW(data, MF_SEPARATOR, 0, nullptr);
@@ -879,6 +893,95 @@ void on_nightly(App& a) {
   rebuild_menu(a);
 }
 
+// Data > Import from watch: copies the connected watch's files beside the
+// database and imports them.
+void on_import_watch(App& a) {
+  gview::import_watch_with_progress(a.hwnd, data_dir_of(a, a.profile));
+  reload(a);
+}
+
+// Data > Import files: FIT files and Omron CSVs from anywhere.
+void on_import_files(App& a) {
+  std::vector<std::filesystem::path> files;
+  if (!gview::pick_import_files(a.hwnd, files)) return;
+  gview::import_files_with_progress(a.hwnd, data_dir_of(a, a.profile), files);
+  reload(a);
+}
+
+// Removes this profile's morning task if it has one (a task without a login only fails).
+void drop_nightly(const std::string& profile) {
+  if (gview::nightly_state(gutil::exe_dir(), profile) != gview::NightlyState::kOn) return;
+  std::wstring err;
+  if (!gview::disable_nightly(profile, err)) {
+    // Not fatal: the task fails harmlessly each morning until removed in Task Scheduler.
+  }
+}
+
+// Data > Profile > Log out: forgets the Garmin login; downloaded data stays.
+void on_logout(App& a) {
+  const std::filesystem::path base = profile_base_of(a.profile);
+  const std::wstring q = L"Log " + who_label(a.profile) +
+                         L" out of Garmin Connect on this PC? The downloaded data stays; the morning "
+                         L"download is turned off until you log in again.";
+  if (MessageBoxW(a.hwnd, q.c_str(), L"Garmin viewer", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
+  drop_nightly(a.profile);
+  std::error_code ec;
+  std::filesystem::remove(gc::token_path(base), ec);
+  rebuild_menu(a);
+  MessageBoxW(a.hwnd, ec ? L"Could not remove the saved login." : L"Logged out.", L"Garmin viewer",
+              ec ? MB_ICONWARNING : MB_ICONINFORMATION);
+}
+
+// Megabytes under a folder (bounded walk), for the remove confirmation.
+double folder_mb(const std::filesystem::path& dir) {
+  uintmax_t bytes = 0;
+  std::error_code ec;
+  size_t seen = 0;
+  for (auto it = std::filesystem::recursive_directory_iterator(dir, ec);
+       !ec && it != std::filesystem::recursive_directory_iterator() && seen < 500000; it.increment(ec), ++seen) {
+    if (it->is_regular_file(ec)) bytes += it->file_size(ec);
+  }
+  return static_cast<double>(bytes) / (1024.0 * 1024.0);
+}
+
+// The first other profile with data, to switch to before removing one; false if none.
+bool fallback_profile(const App& a, const std::string& removing, std::string& out) {
+  const std::vector<std::string> names = gutil::list_profiles(gutil::exe_dir());
+  for (size_t i = 0; i < names.size() && i < gutil::kMaxProfiles + 1; ++i) {
+    if (names[i] != removing && std::filesystem::exists(db_path_for(a, names[i]))) {
+      out = names[i];
+      return true;
+    }
+  }
+  return false;
+}
+
+// Data > Profile > Remove <name>: deletes that person's login and data from
+// this PC (not their Garmin account) after switching to someone else.
+void on_remove_person(App& a) {
+  G_REQUIRE_VOID(a.data_override.empty() && !a.profile.empty());
+  const std::string name = a.profile;
+  std::string other;
+  if (!fallback_profile(a, name, other)) {
+    MessageBoxW(a.hwnd, L"Nobody else here has data yet, so there is no one to switch to. Add or download "
+                        L"another person first.", L"Garmin viewer", MB_ICONINFORMATION);
+    return;
+  }
+  const std::filesystem::path dir = profile_base_of(name);
+  wchar_t q[512] = {};
+  std::swprintf(q, 512, L"Remove %ls from this PC? This deletes their Garmin login and all their downloaded "
+                        L"data here (%.1f MB). Their Garmin Connect account is not affected.",
+                profile_label(name).c_str(), folder_mb(dir));
+  if (MessageBoxW(a.hwnd, q, L"Garmin viewer", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+  drop_nightly(name);
+  switch_to_profile(a, other);  // closes their database before it is deleted
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+  on_reload(a);
+  if (ec) MessageBoxW(a.hwnd, (L"Some files could not be deleted from " + dir.wstring()).c_str(),
+                      L"Garmin viewer", MB_ICONWARNING);
+}
+
 // Data > Copy data from the previous version: the v0.1.3 AppData install.
 void on_migrate(App& a) {
   gview::migrate_with_progress(a.hwnd, profile_base_of(""));
@@ -892,8 +995,27 @@ bool mode_for_id(int id, Mode& out) {
   return true;
 }
 
+// Data menu commands; true when `id` was one of them.
+bool on_data_command(App& a, int id) {
+  switch (id) {
+    case kIdmReload: on_reload(a); return true;
+    case kIdmMapKeys: on_map_keys(a); return true;
+    case kIdmSyncNow: on_sync_now(a); return true;
+    case kIdmLogin: on_login(a); return true;
+    case kIdmAddPerson: on_add_person(a); return true;
+    case kIdmMigrate: on_migrate(a); return true;
+    case kIdmNightly: on_nightly(a); return true;
+    case kIdmImportWatch: on_import_watch(a); return true;
+    case kIdmImportFiles: on_import_files(a); return true;
+    case kIdmLogout: on_logout(a); return true;
+    case kIdmRemovePerson: on_remove_person(a); return true;
+    default: return false;
+  }
+}
+
 void on_command(App& a, HWND hwnd, WPARAM wp) {
   const int id = LOWORD(wp);
+  if (on_data_command(a, id)) return;
   if (id == kListId) {
     if (HIWORD(wp) == LBN_SELCHANGE) show_selection(a);
     return;
@@ -923,27 +1045,6 @@ void on_command(App& a, HWND hwnd, WPARAM wp) {
       a.widget.zoom_at(mid, id == kIdmZoomIn ? kKeyZoom : 1.0 / kKeyZoom);
       break;
     }
-    case kIdmReload:
-      on_reload(a);
-      return;
-    case kIdmMapKeys:
-      on_map_keys(a);
-      return;
-    case kIdmSyncNow:
-      on_sync_now(a);
-      return;
-    case kIdmLogin:
-      on_login(a);
-      return;
-    case kIdmAddPerson:
-      on_add_person(a);
-      return;
-    case kIdmMigrate:
-      on_migrate(a);
-      return;
-    case kIdmNightly:
-      on_nightly(a);
-      return;
     case kIdmExit:
       DestroyWindow(hwnd);
       return;

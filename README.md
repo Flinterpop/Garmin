@@ -35,7 +35,7 @@ Notes:
 
 - The Connect API is Garmin's unofficial app API (the same one `garth` / `python-garminconnect` use). Garmin can change it without notice; when that happens `gsync get <path>` is the debugging tool. The wellness-zip endpoint answers Cloudflare 504 for older dates fairly often; `gsync` retries 5xx with backoff and leaves failed days unmarked so the next sync picks them up.
 - Weight is stored in kg and displayed in pounds.
-- The map fetches tiles from the selected map layer's server (OpenStreetMap by default; see [Map layers](#map-layers)). That is the only traffic that does not go to Garmin. Every provider gets an identifying User-Agent, at most two connections and only the tiles currently on screen, as the OSM tile usage policy asks; tiles are cached on disk in `%LOCALAPPDATA%\GarminSync\tiles` except where the provider's terms forbid it (Google, Azure Maps).
+- The map fetches tiles from the selected map layer's server (OpenStreetMap by default; see [Map layers](#map-layers)). That is the only traffic that does not go to Garmin. Every provider gets an identifying User-Agent, at most two connections and only the tiles currently on screen, as the OSM tile usage policy asks; tiles are cached on disk in `tiles\` beside the executables except where the provider's terms forbid it (Google, Azure Maps).
 - The OAuth consumer key pair is fetched from the public location `garth` publishes, or can be supplied via `GARMIN_OAUTH_CONSUMER_KEY` / `GARMIN_OAUTH_CONSUMER_SECRET`.
 
 ## Build
@@ -53,22 +53,42 @@ Executables land in `build\apps\Release\`. Everything compiles under `/W4 /WX` w
 ## Usage
 
 ```text
-gsync login                     # prompts for email, password, MFA code; tokens saved DPAPI-encrypted
+gsync login                     # prompts for email, password, MFA code; login saved beside gsync.exe
+gsync --profile ann login       # a second person: their own login and database (see Profiles)
+gsync profiles                  # who is set up
 gsync whoami
 gsync sync --days 30            # daily data + wellness FIT + activities for the last 30 days
 gsync sync --from 2026-01-01 --to 2026-03-31 --activities 200
 gsync import <staging>\Activity <staging>\Monitor       # files copied off the watch (see below)
 gsync stats
 gsync import-bp                 # Omron blood-pressure CSVs from Downloads (also runs during sync)
-gsync sync --days 3 --log %LOCALAPPDATA%\GarminSync\sync.log   # what the nightly task runs
+gsync sync --days 3 --log sync.log                             # what the nightly task runs
 gsync get /usersummary-service/usersummary/daily/<displayName>?calendarDate=2026-09-17
 
 fitdump some.fit                # summary
 fitdump some.fit --print        # every message
 fitdump some.fit --csv out.csv  # mesg,timestamp,field,value,units
 
-gview                           # opens the default database; --data <dir> for another
+gview                           # opens the last profile used; --profile <name> or --data <dir> to pick
 ```
+
+### Portable folder and profiles
+
+Everything lives **in the folder that holds `gsync.exe` and `gview.exe`**; nothing goes to AppData or depends on the Windows account. Copy the folder to move the whole install (a login copied to another PC needs a fresh `gsync login`).
+
+```text
+<exe folder>\gsync.exe, gview.exe, fitdump.exe
+<exe folder>\gview.ini                       map layers, API keys, last profile (never commit or share)
+<exe folder>\tokens.bin                      default profile: Garmin login (encrypted to this PC)
+<exe folder>\data\                           default profile: database and downloaded files
+<exe folder>\profiles\<name>\tokens.bin      another person's login
+<exe folder>\profiles\<name>\data\           and their database
+<exe folder>\tiles\                          map tile cache, shared by all profiles
+```
+
+Every `gsync` command takes `--profile <name>` (letters, digits, `_`, `-`), before or after the command: `gsync --profile ann login`, `gsync --profile ann sync --days 30`. In `gview`, **Data → Profile** switches between them (`F5` picks up a profile added while it is open) and the choice is remembered.
+
+**Upgrading from v0.1.3 or earlier**, which kept everything in `%LOCALAPPDATA%\GarminSync`: run `gsync migrate-appdata` once from the new folder. It copies the login, database and tiles beside the exe (never overwriting anything already there) and leaves the AppData copy untouched for you to delete when you are happy.
 
 `gview` keys: `1` – `9` switch Day / Trends / Activity / Hockey / Calendar / Map / Ski / Compare / Sleep, `Up` / `Down` step through the list, mouse wheel zooms around the cursor, drag pans, `Home` fits, `+` / `-` zoom, `L` cycles the map layer, `F5` reloads after a sync.
 
@@ -104,15 +124,16 @@ overlays = wmt_hiking
 
 Hockey shifts are detected from the smoothed HR trace: each rising leg (with 12 bpm hysteresis) whose peak clears the game's median HR is a shift, since HR climbs on the ice and falls on the bench. Zones are 60/70/80/90 % of a robust HR max (95th percentile of per-game maxima). Both live in `src/analysis/hockey.cpp` and are unit-tested on a synthetic game.
 
-Options: `--data <dir>` (default `%LOCALAPPDATA%\GarminSync\data`), `--no-fit`, `--force`, `--out <file>`.
+Options: `--profile <name>`, `--data <dir>` (default `data\` in the profile folder), `--no-fit`, `--force`, `--out <file>`.
 
 ### Keeping it current
 
-A Windows Task Scheduler job named `GarminSync` runs `gsync sync --days 3 --log ...\sync.log` daily at 06:00 when you are logged on, catching up if the machine was off and skipping when offline. Register it with:
+A Windows Task Scheduler job named `GarminSync` runs `gsync sync --days 3 --log sync.log` daily at 06:00 when you are logged on, catching up if the machine was off and skipping when offline. Register it with (for another profile, add `--profile <name>` to the arguments, use its own log name and a different task name):
 
 ```powershell
-$exe = 'C:\source_games\Garmin\build\apps\Release\gsync.exe'; $log = "$env:LOCALAPPDATA\GarminSync\sync.log"
-$action   = New-ScheduledTaskAction -Execute $exe -Argument "sync --days 3 --log `"$log`"" -WorkingDirectory "$env:LOCALAPPDATA\GarminSync"
+$dir = 'C:\GarminSync'   # the folder holding gsync.exe
+$exe = Join-Path $dir 'gsync.exe'; $log = Join-Path $dir 'sync.log'
+$action   = New-ScheduledTaskAction -Execute $exe -Argument "sync --days 3 --log `"$log`"" -WorkingDirectory $dir
 $trigger  = New-ScheduledTaskTrigger -Daily -At 06:00
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RunOnlyIfNetworkAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 45) -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
@@ -131,7 +152,7 @@ Recent watches (fenix 7 and similar) connect over **MTP**, not as a drive letter
 $sh = New-Object -ComObject Shell.Application
 $dev = $sh.NameSpace(17).Items() | Where-Object Name -eq 'fenix 7'
 $g = ($dev.GetFolder.Items() | Select-Object -First 1).GetFolder.Items() | Where-Object Name -eq 'GARMIN'
-$base = Join-Path $env:LOCALAPPDATA 'GarminSync\data\fit\watch\fenix7'
+$base = 'C:\GarminSync\data\fit\watch\fenix7'   # data\ beside gsync.exe (or profiles\<name>\data\)
 foreach ($name in 'Activity','Monitor','SUMMARY') {
   $src = $g.GetFolder.Items() | Where-Object Name -eq $name
   $dst = Join-Path $base $name; New-Item -ItemType Directory -Force $dst | Out-Null
@@ -142,7 +163,7 @@ gsync import $base
 
 `Sleep`, `Metrics` and `HRVStatus` on the watch are usually empty because the watch purges them once Garmin Connect has them; `gsync sync` fetches the same files from Connect as the daily wellness zips.
 
-Tokens live in `%LOCALAPPDATA%\GarminSync\tokens.bin`, encrypted with DPAPI to the current Windows user. The password is never written anywhere. The OAuth1 token is good for about a year; bearer tokens are re-minted from it automatically.
+The login lives in `tokens.bin` in the profile folder, encrypted with DPAPI to this PC (any Windows user here can use it; a copy on another PC cannot). The password is never written anywhere. The OAuth1 token is good for about a year; bearer tokens are re-minted from it automatically.
 
 ## Data layout
 

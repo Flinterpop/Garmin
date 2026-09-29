@@ -44,6 +44,8 @@ int main(int argc, char** argv) {
   if (o.command == "get") return cmd::run_get(o);
   if (o.command == "stats") return cmd::run_stats(o);
   if (o.command == "import-bp") return cmd::run_import_bp(o);
+  if (o.command == "profiles") return cmd::run_profiles(o);
+  if (o.command == "migrate-appdata") return cmd::run_migrate_appdata(o);
   cmd::usage();
   return 2;
 }

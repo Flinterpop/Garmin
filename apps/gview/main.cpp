@@ -56,6 +56,7 @@ constexpr int kIdmZoomOut = 203;
 constexpr int kIdmReload = 301;
 constexpr int kIdmExit = 302;
 constexpr int kIdmMapKeys = 303;
+constexpr int kIdmProfileFirst = 500;  // + index into App::profile_names
 constexpr double kWheelZoomPerNotch = 0.8;
 constexpr double kKeyZoom = 0.7;
 constexpr float kKeyPanFrac = 0.1f;
@@ -77,6 +78,9 @@ struct App {
   map::TileCache tiles;
   map::MapSettings map_settings;  // from gview.ini beside the exe (keys + chosen layers)
   std::filesystem::path ini_path;
+  std::string profile;                    // "" = default profile
+  std::filesystem::path data_override;    // --data: one fixed database, no profile switching
+  std::vector<std::string> profile_names; // Data > Profile menu order
   ComPtr<IWICImagingFactory> wic;
   store::Db db;
   std::filesystem::path db_path;
@@ -100,6 +104,84 @@ struct App {
 };
 
 App* g_app = nullptr;
+
+// Profile names are ASCII by rule (gutil::valid_profile_name); anything else becomes '?' and fails it.
+std::string ascii(const std::wstring& w) {
+  std::string s;
+  for (size_t i = 0; i < w.size() && i <= gutil::kMaxProfileName; ++i) {
+    s.push_back(w[i] < 0x80 ? static_cast<char>(w[i]) : '?');
+  }
+  return s;
+}
+
+// The profile chosen last time, from gview.ini [app] profile.
+std::string remembered_profile(const std::filesystem::path& ini) {
+  wchar_t buf[64] = {};
+  const DWORD n = GetPrivateProfileStringW(L"app", L"profile", L"", buf, 64, ini.c_str());
+  G_ASSERT(n < 64);
+  return ascii(std::wstring(buf, n));
+}
+
+void remember_profile(const std::filesystem::path& ini, const std::string& profile) {
+  G_ASSERT(gutil::valid_profile_name(profile));
+  const std::wstring w(profile.begin(), profile.end());
+  if (!WritePrivateProfileStringW(L"app", L"profile", w.c_str(), ini.c_str())) {
+    // Not fatal (read-only folder): the choice lasts this session.
+  }
+}
+
+std::wstring profile_label(const std::string& profile) {
+  return profile.empty() ? std::wstring(L"(default)") : std::wstring(profile.begin(), profile.end());
+}
+
+// Command line: --data <dir> (a database folder, no profiles) and
+// --profile <name>. Without --profile, the profile last chosen in the menu.
+void parse_command_line(App& a) {
+  int argc = 0;
+  LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  bool named = false;
+  if (argv != nullptr) {
+    for (int i = 1; i + 1 < argc && i < 64; ++i) {
+      const std::wstring k = argv[i];
+      if (k == L"--data") a.data_override = argv[i + 1];
+      if (k == L"--profile") {
+        a.profile = ascii(argv[i + 1]);
+        named = true;
+      }
+    }
+    LocalFree(argv);
+  }
+  if (!named) a.profile = remembered_profile(a.ini_path);
+  if (!gutil::valid_profile_name(a.profile)) a.profile.clear();
+}
+
+// Everything lives beside the exe: <exe folder>[\profiles\<name>]\data\garmin.db.
+std::filesystem::path db_path_for(const App& a, const std::string& profile) {
+  if (!a.data_override.empty()) return a.data_override / L"garmin.db";
+  return gutil::profile_dir(gutil::exe_dir(), profile) / L"data" / L"garmin.db";
+}
+
+// Startup: settings, command line, profiles, then the database to open.
+// A remembered profile without data falls back to the default one; with no
+// database at all, says how to make one and returns false.
+bool choose_database(App& a) {
+  a.ini_path = map::sidecar_ini_path();
+  a.map_settings = map::load_map_settings(a.ini_path);
+  parse_command_line(a);
+  a.profile_names = gutil::list_profiles(gutil::exe_dir());
+  a.db_path = db_path_for(a, a.profile);
+  if (!std::filesystem::exists(a.db_path) && !a.profile.empty() && a.data_override.empty()) {
+    a.profile.clear();
+    a.db_path = db_path_for(a, a.profile);
+  }
+  if (std::filesystem::exists(a.db_path)) return true;
+  MessageBoxW(nullptr, (L"Database not found:\n" + a.db_path.wstring() +
+                        L"\n\nRun `gsync login` and `gsync sync` first (add --profile <name> for "
+                        L"someone else), or pass --data <dir>.")
+                           .c_str(),
+              L"Garmin viewer", MB_ICONERROR);
+  return false;
+}
 
 float dpi_scale(HWND hwnd) { return static_cast<float>(GetDpiForWindow(hwnd)) / 96.0f; }
 
@@ -151,6 +233,7 @@ void apply_rects(App& a) {
 
 void set_title(App& a, const std::string& sub) {
   std::wstring t = L"Garmin viewer";
+  if (!a.profile.empty()) t += L"  [" + profile_label(a.profile) + L"]";
   if (!sub.empty()) t += L"  -  " + plot::widen(sub);
   SetWindowTextW(a.hwnd, t.c_str());
 }
@@ -402,6 +485,28 @@ void move_list_selection(App& a, int delta) {
   show_selection(a);
 }
 
+// Data > Profile: one radio item per profile beside the exe. Greyed out when
+// --data pins one database.
+HMENU build_profile_menu(const App& a) {
+  HMENU m = CreatePopupMenu();
+  G_REQUIRE_RET(m != nullptr, nullptr);
+  const UINT state = a.data_override.empty() ? MF_ENABLED : MF_GRAYED;
+  size_t current = 0;
+  const size_t n = std::min(a.profile_names.size(), gutil::kMaxProfiles + 1);
+  for (size_t i = 0; i < n; ++i) {
+    AppendMenuW(m, MF_STRING | state, static_cast<UINT_PTR>(kIdmProfileFirst) + i,
+                profile_label(a.profile_names[i]).c_str());
+    if (a.profile_names[i] == a.profile) current = i;
+  }
+  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Add someone:  gsync --profile <name> login");
+  if (n > 0) {
+    CheckMenuRadioItem(m, kIdmProfileFirst, kIdmProfileFirst + static_cast<UINT>(n) - 1,
+                       kIdmProfileFirst + static_cast<UINT>(current), MF_BYCOMMAND);
+  }
+  return m;
+}
+
 HMENU build_menu(const App& a) {
   HMENU bar = CreateMenu();
   HMENU view = CreatePopupMenu();
@@ -423,6 +528,7 @@ HMENU build_menu(const App& a) {
   AppendMenuW(view, MF_POPUP, reinterpret_cast<UINT_PTR>(gview::build_layer_menu(a.map_settings)),
               L"Map &layer  (L cycles)");
   HMENU data = CreatePopupMenu();
+  AppendMenuW(data, MF_POPUP, reinterpret_cast<UINT_PTR>(build_profile_menu(a)), L"&Profile");
   AppendMenuW(data, MF_STRING, kIdmReload, L"&Reload database\tF5");
   AppendMenuW(data, MF_STRING, kIdmMapKeys, L"Map API &keys...");
   AppendMenuW(data, MF_SEPARATOR, 0, nullptr);
@@ -507,7 +613,7 @@ void on_create(App& a, HWND hwnd) {
   G_ASSERT(subclassed);
   apply_scale(a);
   a.mapw.set_layers(a.map_settings.base, a.map_settings.overlays);
-  if (!a.tiles.start(gutil::app_data_dir() / L"tiles", hwnd, kMsgTileReady, a.map_settings.keys)) {
+  if (!a.tiles.start(gutil::exe_dir() / L"tiles", hwnd, kMsgTileReady, a.map_settings.keys)) {
     MessageBoxW(hwnd, L"Could not create the map tile cache directory; the Map view will be empty.",
                 L"Garmin viewer", MB_ICONWARNING);
   }
@@ -538,12 +644,10 @@ void apply_layers(App& a) {
 
 // Data > Map API keys: after a save, new keys apply at once: the tile cache
 // gets them and the menu is rebuilt so newly usable layers are enabled.
-void on_map_keys(App& a) {
+// Replaces the menu bar (item states depend on keys and profiles) and
+// restores the view and layer check marks.
+void rebuild_menu(App& a) {
   G_ASSERT(a.hwnd != nullptr);
-  if (!gview::edit_map_keys(a.hwnd, a.ini_path)) return;
-  a.map_settings.keys = map::load_map_settings(a.ini_path).keys;
-  if (!map::provider_available(a.map_settings, a.map_settings.base)) a.map_settings.base = 0;
-  a.tiles.set_keys(a.map_settings.keys);
   HMENU old = GetMenu(a.hwnd);
   HMENU fresh = build_menu(a);
   G_REQUIRE_VOID(fresh != nullptr);
@@ -552,7 +656,46 @@ void on_map_keys(App& a) {
   if (old != nullptr) DestroyMenu(old);
   const int id = kIdmViewDay + static_cast<int>(a.mode);
   CheckMenuRadioItem(fresh, kIdmViewDay, kIdmViewSleep, id, MF_BYCOMMAND);
+  gview::check_layer_menu(fresh, a.map_settings);
+}
+
+void on_map_keys(App& a) {
+  G_ASSERT(a.hwnd != nullptr);
+  if (!gview::edit_map_keys(a.hwnd, a.ini_path)) return;
+  a.map_settings.keys = map::load_map_settings(a.ini_path).keys;
+  if (!map::provider_available(a.map_settings, a.map_settings.base)) a.map_settings.base = 0;
+  a.tiles.set_keys(a.map_settings.keys);
+  rebuild_menu(a);
   apply_layers(a);
+}
+
+// Data > Profile: opens that person's database; a profile without data yet
+// explains how to fill it instead of switching to an empty view.
+void select_profile(App& a, size_t index) {
+  G_REQUIRE_VOID(index < a.profile_names.size() && a.data_override.empty());
+  const std::string& name = a.profile_names[index];
+  if (name == a.profile) return;
+  const std::filesystem::path db = db_path_for(a, name);
+  if (!std::filesystem::exists(db)) {
+    const std::wstring flag = name.empty() ? L"" : L" --profile " + profile_label(name);
+    MessageBoxW(a.hwnd, (L"No data for " + profile_label(name) + L" yet. Run:\n\n  gsync" + flag +
+                         L" login\n  gsync" + flag + L" sync --days 30\n\nthen press F5.")
+                            .c_str(),
+                L"Garmin viewer", MB_ICONINFORMATION);
+    return;
+  }
+  a.profile = name;
+  a.db_path = db;
+  remember_profile(a.ini_path, name);
+  rebuild_menu(a);
+  reload(a);
+}
+
+// F5: picks up profiles added by gsync while gview was open, then reloads.
+void on_reload(App& a) {
+  a.profile_names = gutil::list_profiles(gutil::exe_dir());
+  rebuild_menu(a);
+  reload(a);
 }
 
 // Returns the mode for a View menu id / digit key, or false if it is not one.
@@ -578,6 +721,10 @@ void on_command(App& a, HWND hwnd, WPARAM wp) {
     if (map::choose_layer(a.map_settings, provider)) apply_layers(a);
     return;
   }
+  if (id >= kIdmProfileFirst && static_cast<size_t>(id - kIdmProfileFirst) < a.profile_names.size()) {
+    select_profile(a, static_cast<size_t>(id - kIdmProfileFirst));
+    return;
+  }
   switch (id) {
     case kIdmFit:
       a.widget.fit_x();
@@ -590,7 +737,7 @@ void on_command(App& a, HWND hwnd, WPARAM wp) {
       break;
     }
     case kIdmReload:
-      reload(a);
+      on_reload(a);
       return;
     case kIdmMapKeys:
       on_map_keys(a);
@@ -683,7 +830,7 @@ bool on_key_down(App& a, WPARAM key) {
     case VK_OEM_PLUS: a.widget.zoom_at(mid, kKeyZoom); return true;
     case VK_SUBTRACT:
     case VK_OEM_MINUS: a.widget.zoom_at(mid, 1.0 / kKeyZoom); return true;
-    case VK_F5: reload(a); return true;
+    case VK_F5: on_reload(a); return true;
     case 'L':
       a.map_settings.base = map::next_base(a.map_settings);
       apply_layers(a);
@@ -741,22 +888,6 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-std::filesystem::path resolve_db_path() {
-  int argc = 0;
-  LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-  std::filesystem::path data_dir;
-  if (argv != nullptr) {
-    for (int i = 1; i + 1 < argc; ++i) {
-      if (std::wstring(argv[i]) == L"--data") data_dir = argv[i + 1];
-    }
-    LocalFree(argv);
-  }
-  if (data_dir.empty()) {
-    const std::filesystem::path base = gutil::app_data_dir();
-    data_dir = base.empty() ? std::filesystem::path(L"data") : base / L"data";
-  }
-  return data_dir / L"garmin.db";
-}
 
 }  // namespace
 
@@ -765,16 +896,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int show) {
   if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 2;
   auto app = std::make_unique<App>();
   g_app = app.get();
-  app->db_path = resolve_db_path();
-  app->ini_path = map::sidecar_ini_path();
-  app->map_settings = map::load_map_settings(app->ini_path);
-  if (!std::filesystem::exists(app->db_path)) {
-    MessageBoxW(nullptr, (L"Database not found:\n" + app->db_path.wstring() +
-                          L"\n\nRun `gsync sync` first, or pass --data <dir>.")
-                             .c_str(),
-                L"Garmin viewer", MB_ICONERROR);
-    return 1;
-  }
+  if (!choose_database(*app)) return 1;
 
   if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, app->d2d.GetAddressOf()))) {
     return 2;

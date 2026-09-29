@@ -33,9 +33,8 @@ constexpr int kActivityPage = 50;
 constexpr DWORD kPoliteDelayMs = 300;     // between API calls
 constexpr int kWeightChunkDays = 31;
 constexpr int kExitLoginRequired = 3;     // 1 = some fetches failed, 2 = usage
-void usage_text() {
-  std::fputs(
-      "usage: gsync <command> [options]\n"
+constexpr char kUsage[] =
+      "usage: gsync [options] <command> [options]\n"
       "commands:\n"
       "  login                 sign in to Garmin Connect (prompts; supports MFA)\n"
       "  logout                delete the saved tokens\n"
@@ -45,8 +44,13 @@ void usage_text() {
       "  get <api-path>        raw authenticated GET, prints JSON (debugging)\n"
       "  stats                 row counts in the local database\n"
       "  import-bp <csv>...    import Omron blood-pressure CSV exports\n"
+      "  profiles              list profiles and whether each is logged in\n"
+      "  migrate-appdata       copy login, data and tiles from %LOCALAPPDATA%\\GarminSync\n"
+      "                        (v0.1.3 and earlier) to the folder beside gsync.exe\n"
       "options:\n"
-      "  --data <dir>          data directory (default %LOCALAPPDATA%\\GarminSync\\data)\n"
+      "  --profile <name>      use this person's login and data (profiles\\<name> beside\n"
+      "                        gsync.exe); without it, the default profile\n"
+      "  --data <dir>          data directory (default: data\\ in the profile folder)\n"
       "  --days <n>            sync the last n days (default 7)\n"
       "  --from <YYYY-MM-DD>   sync start date (overrides --days)\n"
       "  --to <YYYY-MM-DD>     sync end date (default today)\n"
@@ -55,14 +59,25 @@ void usage_text() {
       "  --force               re-fetch / re-import even if already done\n"
       "  --out <file>          write `get` output to a file\n"
       "  --log <file>          append all output to a log file (for scheduled runs)\n"
-      "exit codes: 0 ok, 1 some fetches failed, 2 usage error, 3 login required\n",
-      stderr);
+      "exit codes: 0 ok, 1 some fetches failed, 2 usage error, 3 login required\n";
+
+void usage_text() { std::fputs(kUsage, stderr); }
+
+// The profile's folder beside the exe: logins and data never go to AppData.
+std::filesystem::path profile_base(const Options& o) {
+  G_ASSERT(gutil::valid_profile_name(o.profile));
+  const std::filesystem::path exe = gutil::exe_dir();
+  G_REQUIRE_RET(!exe.empty(), std::filesystem::path("."));
+  return gutil::profile_dir(exe, o.profile);
 }
 
 std::filesystem::path resolve_data_dir(const Options& o) {
   if (!o.data_dir.empty()) return o.data_dir;
-  const std::filesystem::path base = gutil::app_data_dir();
-  return base.empty() ? std::filesystem::path("data") : base / "data";
+  return profile_base(o) / "data";
+}
+
+std::string profile_label(const std::string& profile) {
+  return profile.empty() ? std::string("(default)") : profile;
 }
 
 bool open_db(const Options& o, store::Db& db, std::filesystem::path& data_dir) {
@@ -78,21 +93,22 @@ bool open_db(const Options& o, store::Db& db, std::filesystem::path& data_dir) {
 }
 
 // Loads saved tokens and returns a client, or null with a message printed.
-std::unique_ptr<gc::GarminClient> make_client(bool require_login) {
+std::unique_ptr<gc::GarminClient> make_client(const Options& o, bool require_login) {
   gc::Tokens t;
   std::string err;
-  const bool loaded = gc::load_tokens(gc::default_token_path(), t, err);
+  const bool loaded = gc::load_tokens(gc::token_path(profile_base(o)), t, err);
   if (!loaded && require_login) {
-    std::fprintf(stderr, "error: %s\nrun `gsync login` first\n", err.c_str());
+    const std::string flag = o.profile.empty() ? std::string() : " --profile " + o.profile;
+    std::fprintf(stderr, "error: %s\nrun `gsync%s login` first\n", err.c_str(), flag.c_str());
     return nullptr;
   }
   return std::make_unique<gc::GarminClient>(t);
 }
 
-void persist_tokens(gc::GarminClient& client) {
+void persist_tokens(const Options& o, gc::GarminClient& client) {
   if (!client.tokens_dirty()) return;
   std::string err;
-  if (!gc::save_tokens(gc::default_token_path(), client.tokens(), err)) {
+  if (!gc::save_tokens(gc::token_path(profile_base(o)), client.tokens(), err)) {
     std::fprintf(stderr, "warning: %s\n", err.c_str());
     return;
   }
@@ -398,8 +414,8 @@ void usage() { usage_text(); }
 bool parse(int argc, char** argv, Options& o, std::string& err) {
   G_ASSERT(argv != nullptr);
   if (argc < 2) return false;
-  o.command = argv[1];
-  for (int i = 2; i < argc; ++i) {
+  // Options may come before or after the command: `gsync --profile ann login`.
+  for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     const bool has_next = i + 1 < argc;
     if (a == "--data" && has_next) {
@@ -424,6 +440,12 @@ bool parse(int argc, char** argv, Options& o, std::string& err) {
       o.out_file = argv[++i];
     } else if (a == "--log" && has_next) {
       o.log_file = argv[++i];
+    } else if (a == "--profile" && has_next) {
+      o.profile = argv[++i];
+      if (o.profile.empty() || !gutil::valid_profile_name(o.profile)) {
+        err = "--profile: 1-32 characters of letters, digits, _ and -";
+        return false;
+      }
     } else if (a == "--no-fit") {
       o.no_fit = true;
     } else if (a == "--force") {
@@ -431,9 +453,15 @@ bool parse(int argc, char** argv, Options& o, std::string& err) {
     } else if (!a.empty() && a[0] == '-') {
       err = "unknown option " + a;
       return false;
+    } else if (o.command.empty()) {
+      o.command = a;
     } else {
       o.args.push_back(a);
     }
+  }
+  if (o.command.empty()) {
+    err = "no command";
+    return false;
   }
   int64_t tmp = 0;
   if (!o.from_date.empty() && !gutil::parse_date(o.from_date, tmp)) {
@@ -449,8 +477,9 @@ bool parse(int argc, char** argv, Options& o, std::string& err) {
 
 // ---------------------------------------------------------------- commands
 
-int run_login(const Options&) {
-  auto client = make_client(false);
+int run_login(const Options& o) {
+  auto client = make_client(o, false);
+  std::printf("profile: %s\n", profile_label(o.profile).c_str());
   G_ASSERT(client != nullptr);
   std::string email;
   std::string password;
@@ -462,16 +491,16 @@ int run_login(const Options&) {
     return 1;
   }
   SecureZeroMemory(password.data(), password.size());
-  persist_tokens(*client);
+  persist_tokens(o, *client);
   std::printf("signed in as %s (%s)\n", client->tokens().full_name.c_str(),
               client->tokens().display_name.c_str());
-  std::printf("tokens saved to %s\n", gc::default_token_path().string().c_str());
+  std::printf("tokens saved to %s\n", gc::token_path(profile_base(o)).string().c_str());
   return 0;
 }
 
-int run_logout(const Options&) {
+int run_logout(const Options& o) {
   std::error_code ec;
-  const std::filesystem::path p = gc::default_token_path();
+  const std::filesystem::path p = gc::token_path(profile_base(o));
   if (std::filesystem::remove(p, ec)) {
     std::printf("removed %s\n", p.string().c_str());
   } else {
@@ -480,15 +509,15 @@ int run_logout(const Options&) {
   return 0;
 }
 
-int run_whoami(const Options&) {
-  auto client = make_client(true);
+int run_whoami(const Options& o) {
+  auto client = make_client(o, true);
   if (!client) return 1;
   std::string err;
   if (!client->fetch_profile(err)) {
     std::fprintf(stderr, "error: %s\n", err.c_str());
     return 1;
   }
-  persist_tokens(*client);
+  persist_tokens(o, *client);
   const gc::Tokens& t = client->tokens();
   std::printf("%s (%s)\n", t.full_name.c_str(), t.display_name.c_str());
   std::printf("bearer token valid until %s\n", gutil::iso8601_utc(t.oauth2.expires_at).c_str());
@@ -496,7 +525,7 @@ int run_whoami(const Options&) {
 }
 
 int run_sync(const Options& o) {
-  auto client = make_client(true);
+  auto client = make_client(o, true);
   if (!client) return 1;
   store::Db db;
   std::filesystem::path data_dir;
@@ -521,7 +550,7 @@ int run_sync(const Options& o) {
     sync_day_kind(cx, "stress", date, &gc::GarminClient::daily_stress, &import_stress_adapter);
     sync_day_kind(cx, "hrv", date, &gc::GarminClient::daily_hrv, &store::import_hrv);
     if (!o.no_fit) sync_wellness_fit(cx, date);
-    persist_tokens(*client);
+    persist_tokens(o, *client);
     if (client->login_required()) break;
     date = gutil::add_days(date, 1);
   }
@@ -531,7 +560,7 @@ int run_sync(const Options& o) {
   const bool parsed = gutil::parse_date(from, from_ts);
   G_ASSERT(parsed);
   if (o.max_activities > 0 && !client->login_required()) sync_activities(cx, from_ts);
-  persist_tokens(*client);
+  persist_tokens(o, *client);
 
   std::printf("done: %lld rows written, %d failures\n", static_cast<long long>(cx.rows),
               cx.failures);
@@ -567,7 +596,7 @@ int run_get(const Options& o) {
     std::fprintf(stderr, "error: get needs an API path starting with '/'\n");
     return 2;
   }
-  auto client = make_client(true);
+  auto client = make_client(o, true);
   if (!client) return 1;
   std::string err;
   std::vector<uint8_t> bytes;
@@ -575,7 +604,7 @@ int run_get(const Options& o) {
     std::fprintf(stderr, "error: %s\n", err.c_str());
     return 1;
   }
-  persist_tokens(*client);
+  persist_tokens(o, *client);
   if (!o.out_file.empty()) {
     if (!gutil::write_file(o.out_file, bytes.data(), bytes.size())) {
       std::fprintf(stderr, "error: cannot write %s\n", o.out_file.c_str());
@@ -638,6 +667,70 @@ int run_stats(const Options& o) {
     std::printf("  %-22s %10lld\n", t, static_cast<long long>(s.col_int(0)));
   }
   return 0;
+}
+
+int run_profiles(const Options&) {
+  const std::filesystem::path exe = gutil::exe_dir();
+  G_REQUIRE_RET(!exe.empty(), 1);
+  const std::vector<std::string> names = gutil::list_profiles(exe);
+  std::printf("profiles in %s\n", exe.string().c_str());
+  for (size_t i = 0; i < names.size() && i < gutil::kMaxProfiles + 1; ++i) {
+    const std::filesystem::path base = gutil::profile_dir(exe, names[i]);
+    std::error_code ec;
+    const bool login = std::filesystem::exists(gc::token_path(base), ec);
+    const bool data = std::filesystem::exists(base / "data" / "garmin.db", ec);
+    std::printf("  %-20s login: %-3s  database: %s\n", profile_label(names[i]).c_str(),
+                login ? "yes" : "no", data ? "yes" : "no");
+  }
+  std::printf("add one with: gsync --profile <name> login\n");
+  return 0;
+}
+
+namespace {
+
+// Copies `from` to `to` unless `to` already exists; reports what happened.
+bool copy_if_absent(const std::filesystem::path& from, const std::filesystem::path& to) {
+  std::error_code ec;
+  if (!std::filesystem::exists(from, ec)) {
+    std::printf("  %-10s nothing to copy\n", from.filename().string().c_str());
+    return true;
+  }
+  if (std::filesystem::exists(to, ec)) {
+    std::printf("  %-10s already at %s, left alone\n", to.filename().string().c_str(),
+                to.string().c_str());
+    return true;
+  }
+  std::filesystem::copy(from, to,
+                        std::filesystem::copy_options::recursive |
+                            std::filesystem::copy_options::copy_symlinks,
+                        ec);
+  if (ec) {
+    std::fprintf(stderr, "  %-10s copy failed: %s\n", from.filename().string().c_str(),
+                 ec.message().c_str());
+    return false;
+  }
+  std::printf("  %-10s copied to %s\n", to.filename().string().c_str(), to.string().c_str());
+  return true;
+}
+
+}  // namespace
+
+// One-time move off AppData: copies (never moves) the v0.1.3 layout into the
+// default profile beside the exe. The original stays until the user deletes it.
+int run_migrate_appdata(const Options& o) {
+  G_ASSERT(o.profile.empty() || gutil::valid_profile_name(o.profile));
+  const std::filesystem::path from = gutil::legacy_appdata_dir();
+  const std::filesystem::path to = profile_base(o);
+  G_REQUIRE_RET(!from.empty() && !to.empty(), 1);
+  std::printf("copying %s -> %s\n", from.string().c_str(), to.string().c_str());
+  std::error_code ec;
+  std::filesystem::create_directories(to, ec);
+  bool ok = copy_if_absent(from / "tokens.bin", gc::token_path(to));
+  ok = copy_if_absent(from / "data", to / "data") && ok;
+  ok = copy_if_absent(from / "tiles", gutil::exe_dir() / "tiles") && ok;  // tiles are shared
+  std::printf(ok ? "done; the AppData copy is untouched and can be deleted once you are happy\n"
+                 : "some items failed; nothing was removed from AppData\n");
+  return ok ? 0 : 1;
 }
 
 }  // namespace cmd

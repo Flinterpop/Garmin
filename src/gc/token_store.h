@@ -1,6 +1,7 @@
 // Persisted login state. The OAuth1 token lives about a year and is what we
-// use to mint fresh OAuth2 bearer tokens, so both are kept. The file is
-// DPAPI-encrypted to the current Windows user; the password is never stored.
+// use to mint fresh OAuth2 bearer tokens, so both are kept. The file sits in
+// the profile folder beside the exes, DPAPI-encrypted to this PC (not to a
+// Windows account); the password is never stored.
 #pragma once
 #include <cstdint>
 #include <filesystem>
@@ -32,7 +33,8 @@ struct Tokens {
   bool oauth2_valid(int64_t now, int64_t margin_s = 60) const;
 };
 
-std::filesystem::path default_token_path();
+// <profile folder>\tokens.bin (see gutil::profile_dir).
+std::filesystem::path token_path(const std::filesystem::path& profile_base);
 bool load_tokens(const std::filesystem::path& p, Tokens& out, std::string& err);
 bool save_tokens(const std::filesystem::path& p, const Tokens& t, std::string& err);
 

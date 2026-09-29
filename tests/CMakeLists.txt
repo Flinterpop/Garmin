@@ -14,7 +14,8 @@ add_executable(garmin_tests
   test_terrain.cpp
   test_ski.cpp
   test_bp_import.cpp
-  test_importer_json.cpp)
+  test_importer_json.cpp
+  test_profiles.cpp)
 target_link_libraries(garmin_tests PRIVATE fitlib gclib plotlib maplib map3dlib analysislib gstore gutil Catch2::Catch2WithMain)
 include(Catch)
 catch_discover_tests(garmin_tests)

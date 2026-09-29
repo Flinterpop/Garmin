@@ -4,6 +4,8 @@
 
 Personal health-data tooling: C++20 / Win32, no UI framework. **This repository is not export-controlled** (it is the owner's own fitness data and open-source code under MIT), unlike the other repositories on this machine. Still keep work local; the only outbound traffic is to Garmin Connect and the map tile servers (OpenStreetMap by default; the providers in `src/map/tile_provider.cpp` when chosen in View → Map layer; AWS Terrain Tiles for the 3D map's heights).
 
+**Portable install: everything lives beside the exes, nothing in AppData, nothing tied to a Windows account** (the owner's explicit rule). Logins (`tokens.bin`, DPAPI machine scope), databases (`data\`), the tile cache (`tiles\`), `gview.ini` and other people's profiles (`profiles\<name>\`) all sit in the exe folder; multi-user means `--profile <name>`, never Windows accounts. `gutil::exe_dir()` is the only base path; `legacy_appdata_dir()` exists solely for `gsync migrate-appdata`.
+
 **`gview.ini` (beside `gview.exe`) holds the user's map API keys.** Never commit it, never put it in a release zip, never paste its contents anywhere. `*.ini` is gitignored; check `git status` and the zip listing for it before every commit and release.
 
 ## Build and test
@@ -51,4 +53,4 @@ The full helper is in the session notes; the pattern is: PostMessage keys, sleep
 - `setvbuf(_IOLBF, 0)` is an invalid parameter on MSVC (fail-fast 0xC0000409); use `_IONBF`.
 - `LBS_EXTENDEDSEL` list boxes ignore `LB_SETCURSEL`; use `LB_SETSEL` + `LB_GETSELITEMS`.
 - Garmin's `download-service` answers Cloudflare 504 for older wellness zips; `gsync` retries with backoff and re-fetches unmarked days on the next run.
-- A token-renewal bug only shows up a day after `gsync login`, once the bearer from login has expired; a sync the same evening proves nothing. The v0.1.1 re-exchange re-sent the login `mfa_token`, got 403 "MFA token was invalid", and the nightly task failed silently for 9 days. `tokens.bin` not rewritten since login is the tell. Check `Get-ScheduledTaskInfo GarminSync` (`LastTaskResult` 3 = login required) when reviewing the repo.
+- A token-renewal bug only shows up a day after `gsync login`, once the bearer from login has expired; a sync the same evening proves nothing. The v0.1.1 re-exchange re-sent the login `mfa_token`, got 403 "MFA token was invalid", and the nightly task failed silently for 9 days. `tokens.bin` (beside `gsync.exe`) not rewritten since login is the tell. Check `Get-ScheduledTaskInfo GarminSync` (`LastTaskResult` 3 = login required) when reviewing the repo.

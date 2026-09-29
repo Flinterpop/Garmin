@@ -13,7 +13,8 @@ std::string random_hex(size_t num_bytes);
 
 std::string base64_encode(const std::vector<uint8_t>& bytes);
 
-// DPAPI protection bound to the current Windows user account.
+// DPAPI protection bound to this PC (machine scope): any Windows user here
+// can decrypt, another PC cannot. Unprotect also reads older user-scope blobs.
 bool dpapi_protect(const std::string& plain, std::vector<uint8_t>& out_blob);
 bool dpapi_unprotect(const std::vector<uint8_t>& blob, std::string& out_plain);
 

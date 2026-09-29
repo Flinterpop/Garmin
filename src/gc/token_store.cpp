@@ -14,10 +14,9 @@ bool Tokens::oauth2_valid(int64_t now, int64_t margin_s) const {
   return !oauth2.access_token.empty() && now + margin_s < oauth2.expires_at;
 }
 
-std::filesystem::path default_token_path() {
-  const std::filesystem::path dir = gutil::app_data_dir();
-  G_REQUIRE_RET(!dir.empty(), std::filesystem::path());
-  return dir / L"tokens.bin";
+std::filesystem::path token_path(const std::filesystem::path& profile_base) {
+  G_REQUIRE_RET(!profile_base.empty(), std::filesystem::path());
+  return profile_base / L"tokens.bin";
 }
 
 bool load_tokens(const std::filesystem::path& p, Tokens& out, std::string& err) {
@@ -29,7 +28,7 @@ bool load_tokens(const std::filesystem::path& p, Tokens& out, std::string& err) 
   }
   std::string plain;
   if (!gutil::dpapi_unprotect(blob, plain)) {
-    err = "could not decrypt token file (different Windows user?)";
+    err = "could not decrypt token file (saved on another PC?)";
     return false;
   }
   json j = json::parse(plain, nullptr, false);

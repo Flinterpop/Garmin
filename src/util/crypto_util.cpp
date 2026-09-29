@@ -100,8 +100,10 @@ bool dpapi_protect(const std::string& plain, std::vector<uint8_t>& out_blob) {
   in.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(plain.data()));
   in.cbData = static_cast<DWORD>(plain.size());
   DATA_BLOB out{};
+  // Machine scope: any Windows user on this PC can read it (the app, not the
+  // account, owns the login); a copy taken to another PC cannot.
   G_REQUIRE_RET(CryptProtectData(&in, L"GarminSync tokens", nullptr, nullptr, nullptr,
-                                 CRYPTPROTECT_UI_FORBIDDEN, &out),
+                                 CRYPTPROTECT_UI_FORBIDDEN | CRYPTPROTECT_LOCAL_MACHINE, &out),
                 false);
   out_blob.assign(out.pbData, out.pbData + out.cbData);
   LocalFree(out.pbData);

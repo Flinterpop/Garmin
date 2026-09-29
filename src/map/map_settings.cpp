@@ -96,6 +96,49 @@ bool save_map_layers(const std::filesystem::path& ini, const MapSettings& s) {
          WritePrivateProfileStringW(L"map", L"overlays", ov.c_str(), ini.c_str()) != 0;
 }
 
+std::vector<std::string> key_names() {
+  std::vector<std::string> out;
+  const std::vector<TileProvider>& t = tile_providers();
+  for (size_t i = 0; i < t.size() && i < kMaxProviders; ++i) {
+    const std::string& n = t[i].key_name;
+    if (!n.empty() && std::find(out.begin(), out.end(), n) == out.end()) out.push_back(n);
+  }
+  G_ASSERT(out.size() <= kMaxProviders);
+  return out;
+}
+
+bool valid_api_key(const std::string& key) {
+  if (key.size() < 8 || key.size() > kMaxKeyLength) return false;
+  for (size_t i = 0; i < key.size() && i < kMaxKeyLength; ++i) {
+    const char c = key[i];
+    const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                    c == '-' || c == '_' || c == '.' || c == '~';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+bool save_map_keys(const std::filesystem::path& ini,
+                   const std::map<std::string, std::string>& keys) {
+  G_REQUIRE_RET(!ini.empty(), false);
+  const std::vector<std::string> names = key_names();
+  for (const auto& [name, value] : keys) {
+    G_REQUIRE_RET(std::find(names.begin(), names.end(), name) != names.end(), false);
+    G_REQUIRE_RET(valid_api_key(value), false);
+  }
+  bool ok = true;
+  for (size_t i = 0; i < names.size() && i < kMaxProviders; ++i) {
+    const std::wstring wname(names[i].begin(), names[i].end());
+    const auto it = keys.find(names[i]);
+    const std::wstring wvalue = it == keys.end() ? std::wstring()
+                                                 : std::wstring(it->second.begin(), it->second.end());
+    // A null value deletes the entry; the key is ASCII (valid_api_key), so widening is exact.
+    ok &= WritePrivateProfileStringW(L"keys", wname.c_str(),
+                                     it == keys.end() ? nullptr : wvalue.c_str(), ini.c_str()) != 0;
+  }
+  return ok;
+}
+
 bool provider_available(const MapSettings& s, size_t provider) {
   const std::vector<TileProvider>& t = tile_providers();
   G_REQUIRE_RET(provider < t.size(), false);

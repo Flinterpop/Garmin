@@ -30,6 +30,19 @@ MapSettings load_map_settings(const std::filesystem::path& ini);
 // Writes only the [map] section; [keys] is left as the user wrote it.
 bool save_map_layers(const std::filesystem::path& ini, const MapSettings& s);
 
+// The distinct key names the providers use ("google", "azure_maps", ...).
+std::vector<std::string> key_names();
+
+// An API key as the providers issue them: 8..kMaxKeyLength printable ASCII
+// characters with no spaces, quotes or other characters that would break a
+// URL query or the ini file.
+bool valid_api_key(const std::string& key);
+
+// Writes the [keys] section: each known name in `keys` is set, each known
+// name missing from `keys` is removed. Unknown names are rejected.
+bool save_map_keys(const std::filesystem::path& ini,
+                   const std::map<std::string, std::string>& keys);
+
 // True when `provider` needs no key or its key is present.
 bool provider_available(const MapSettings& s, size_t provider);
 

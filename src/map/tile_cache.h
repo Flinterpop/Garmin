@@ -76,6 +76,11 @@ class TileCache {
   // tiles of a new view so we never fetch what scrolled away.
   void clear_queue();
 
+  // Replaces the API keys (after the user edits them). Drops Google
+  // sessions minted with the old key and forgets recent failures, so tiles
+  // that failed for want of a key are fetched again at once.
+  void set_keys(std::map<std::string, std::string> keys);
+
  private:
   void worker_main();
   bool fetch(gc::HttpClient& http, const TileKey& key, std::vector<uint8_t>& img);
@@ -88,9 +93,10 @@ class TileCache {
   std::filesystem::path dir_;
   HWND hwnd_ = nullptr;
   UINT msg_ = 0;
-  std::map<std::string, std::string> keys_;  // set in start(), read-only after
+  std::string key_named(const std::string& name) const;  // copy under cred_mu_
 
-  std::mutex session_mu_;                               // guards google_sessions_
+  mutable std::mutex cred_mu_;                          // guards keys_ and google_sessions_
+  std::map<std::string, std::string> keys_;             // key_name -> API key
   std::map<std::string, std::string> google_sessions_;  // map_type -> token
 
   std::mutex mu_;

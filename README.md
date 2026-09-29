@@ -87,7 +87,7 @@ gview                           # opens the default database; --data <dir> for a
 | Azure Maps road, imagery | `azure_maps` | Bing Maps' successor; Azure Maps key; tiles are not stored on disk |
 | Hiking / cycling routes overlay | no | Waymarked Trails, drawn over any base map |
 
-Keys go in a sidecar `gview.ini` beside `gview.exe`. Layers whose key is missing are greyed out in the menu.
+Enter keys with **Data → Map API keys…** (masked unless *Show keys* is ticked; an empty field removes that key). New keys take effect at once. They are saved in a sidecar `gview.ini` beside `gview.exe`, which you can also edit by hand. Layers whose key is missing are greyed out in the menu.
 
 ```ini
 [keys]

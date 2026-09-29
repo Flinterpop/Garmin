@@ -1,0 +1,21 @@
+// Map API keys dialog for gview. Keep every string under 250 characters:
+// rc.exe truncates at 256 with only a warning, which /WX does not cover.
+#include <windows.h>
+#include "keys_dialog_ids.h"
+
+IDD_MAP_KEYS DIALOGEX 0, 0, 300, 132
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Map API keys"
+FONT 9, "Segoe UI"
+BEGIN
+  LTEXT "Saved in gview.ini next to gview.exe. Leave a field empty to remove its key. The file holds secrets: keep it private.", -1, 7, 7, 286, 18
+  LTEXT "&Google Map Tiles API", -1, 7, 32, 88, 10
+  EDITTEXT IDC_KEY_GOOGLE, 98, 30, 195, 13, ES_AUTOHSCROLL | ES_PASSWORD
+  LTEXT "&Azure Maps", -1, 7, 50, 88, 10
+  EDITTEXT IDC_KEY_AZURE, 98, 48, 195, 13, ES_AUTOHSCROLL | ES_PASSWORD
+  LTEXT "&Thunderforest", -1, 7, 68, 88, 10
+  EDITTEXT IDC_KEY_THUNDERFOREST, 98, 66, 195, 13, ES_AUTOHSCROLL | ES_PASSWORD
+  AUTOCHECKBOX "&Show keys", IDC_SHOW_KEYS, 98, 85, 100, 10
+  DEFPUSHBUTTON "Save", IDOK, 186, 110, 50, 14
+  PUSHBUTTON "Cancel", IDCANCEL, 243, 110, 50, 14
+END

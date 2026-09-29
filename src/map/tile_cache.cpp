@@ -82,11 +82,26 @@ bool TileCache::read_disk(const TileKey& k, std::vector<uint8_t>& png) const {
   return gutil::read_file(p, png) && looks_like_image(png);
 }
 
-std::string TileCache::key_for(const TileKey& k) const {
-  const std::string& name = tile_providers()[static_cast<size_t>(k.layer)].key_name;
-  if (name.empty()) return std::string();
+std::string TileCache::key_named(const std::string& name) const {
+  std::lock_guard<std::mutex> lock(cred_mu_);
   const auto it = keys_.find(name);
   return it == keys_.end() ? std::string() : it->second;
+}
+
+std::string TileCache::key_for(const TileKey& k) const {
+  const std::string& name = tile_providers()[static_cast<size_t>(k.layer)].key_name;
+  return name.empty() ? std::string() : key_named(name);
+}
+
+void TileCache::set_keys(std::map<std::string, std::string> keys) {
+  {
+    std::lock_guard<std::mutex> lock(cred_mu_);
+    keys_ = std::move(keys);
+    google_sessions_.clear();
+  }
+  std::lock_guard<std::mutex> lock(mu_);
+  failed_.clear();
+  G_ASSERT(failed_.empty());
 }
 
 // Worker thread. Google tiles need a session token per map type; it lasts
@@ -95,7 +110,7 @@ bool TileCache::google_session(gc::HttpClient& http, const std::string& map_type
                                std::string& out) {
   G_ASSERT(!map_type.empty());
   {
-    std::lock_guard<std::mutex> lock(session_mu_);
+    std::lock_guard<std::mutex> lock(cred_mu_);
     const auto it = google_sessions_.find(map_type);
     if (it != google_sessions_.end()) {
       out = it->second;
@@ -103,18 +118,18 @@ bool TileCache::google_session(gc::HttpClient& http, const std::string& map_type
     }
   }
   // Both workers may create a session at once; either token is valid.
-  const auto key = keys_.find("google");
-  G_REQUIRE_RET(key != keys_.end(), false);
+  const std::string key = key_named("google");
+  G_REQUIRE_RET(!key.empty(), false);
   gc::HttpResponse r;
   std::string err;
-  const bool ok = http.request("POST", kGoogleSessionUrl + key->second,
+  const bool ok = http.request("POST", kGoogleSessionUrl + key,
                                {{"Content-Type", "application/json"}},
                                google_session_body(map_type), r, err);
   if (!ok || r.status != 200) return false;
   const nlohmann::json j = nlohmann::json::parse(r.body, nullptr, false);
   if (!j.is_object() || !j.contains("session") || !j["session"].is_string()) return false;
   out = j["session"].get<std::string>();
-  std::lock_guard<std::mutex> lock(session_mu_);
+  std::lock_guard<std::mutex> lock(cred_mu_);
   google_sessions_[map_type] = out;
   return true;
 }
@@ -132,7 +147,7 @@ bool TileCache::fetch(gc::HttpClient& http, const TileKey& key, std::vector<uint
   if (!http.get(url, {}, resp, err)) return false;
   // A rejected Google session is re-created on the next attempt.
   if (p.session == SessionKind::kGoogle && (resp.status == 401 || resp.status == 403)) {
-    std::lock_guard<std::mutex> lock(session_mu_);
+    std::lock_guard<std::mutex> lock(cred_mu_);
     google_sessions_.erase(p.map_type);
   }
   if (resp.status != 200 || resp.body.size() > kMaxTileBytes) return false;

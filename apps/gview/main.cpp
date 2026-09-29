@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "keys_dialog.h"
 #include "layer_menu.h"
 #include "map/map_settings.h"
 #include "map/map_widget.h"
@@ -54,6 +55,7 @@ constexpr int kIdmZoomIn = 202;
 constexpr int kIdmZoomOut = 203;
 constexpr int kIdmReload = 301;
 constexpr int kIdmExit = 302;
+constexpr int kIdmMapKeys = 303;
 constexpr double kWheelZoomPerNotch = 0.8;
 constexpr double kKeyZoom = 0.7;
 constexpr float kKeyPanFrac = 0.1f;
@@ -422,6 +424,7 @@ HMENU build_menu(const App& a) {
               L"Map &layer  (L cycles)");
   HMENU data = CreatePopupMenu();
   AppendMenuW(data, MF_STRING, kIdmReload, L"&Reload database\tF5");
+  AppendMenuW(data, MF_STRING, kIdmMapKeys, L"Map API &keys...");
   AppendMenuW(data, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(data, MF_STRING, kIdmExit, L"E&xit");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(view), L"&View");
@@ -533,6 +536,25 @@ void apply_layers(App& a) {
   InvalidateRect(a.hwnd, nullptr, FALSE);
 }
 
+// Data > Map API keys: after a save, new keys apply at once: the tile cache
+// gets them and the menu is rebuilt so newly usable layers are enabled.
+void on_map_keys(App& a) {
+  G_ASSERT(a.hwnd != nullptr);
+  if (!gview::edit_map_keys(a.hwnd, a.ini_path)) return;
+  a.map_settings.keys = map::load_map_settings(a.ini_path).keys;
+  if (!map::provider_available(a.map_settings, a.map_settings.base)) a.map_settings.base = 0;
+  a.tiles.set_keys(a.map_settings.keys);
+  HMENU old = GetMenu(a.hwnd);
+  HMENU fresh = build_menu(a);
+  G_REQUIRE_VOID(fresh != nullptr);
+  const BOOL set = SetMenu(a.hwnd, fresh);
+  G_ASSERT(set);
+  if (old != nullptr) DestroyMenu(old);
+  const int id = kIdmViewDay + static_cast<int>(a.mode);
+  CheckMenuRadioItem(fresh, kIdmViewDay, kIdmViewSleep, id, MF_BYCOMMAND);
+  apply_layers(a);
+}
+
 // Returns the mode for a View menu id / digit key, or false if it is not one.
 bool mode_for_id(int id, Mode& out) {
   if (id < kIdmViewDay || id > kIdmViewSleep) return false;
@@ -569,6 +591,9 @@ void on_command(App& a, HWND hwnd, WPARAM wp) {
     }
     case kIdmReload:
       reload(a);
+      return;
+    case kIdmMapKeys:
+      on_map_keys(a);
       return;
     case kIdmExit:
       DestroyWindow(hwnd);

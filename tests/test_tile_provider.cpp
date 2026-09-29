@@ -106,6 +106,31 @@ TEST_CASE("map settings: a keyed base without its key falls back to OSM", "[map]
   CHECK(map::load_map_settings(std::filesystem::path()).base == 0);  // no file at all
 }
 
+TEST_CASE("api keys: names, validation, save and remove", "[map]") {
+  const auto names = map::key_names();
+  CHECK(names == std::vector<std::string>{"thunderforest", "google", "azure_maps"});
+
+  CHECK(map::valid_api_key("AIzaSyTestKey_0123-abc.~"));
+  CHECK_FALSE(map::valid_api_key("short"));
+  CHECK_FALSE(map::valid_api_key("has space in it"));
+  CHECK_FALSE(map::valid_api_key("amp&injected=1"));  // would break the URL query
+  CHECK_FALSE(map::valid_api_key("semi;colon-key"));  // would break the ini line
+  CHECK_FALSE(map::valid_api_key(std::string(map::kMaxKeyLength + 1, 'a')));
+
+  const auto ini = write_ini("gview_test_keys.ini",
+                             "[keys]\nthunderforest = oldtfkey1\n[map]\nbase = tf_cycle\n");
+  REQUIRE(map::save_map_keys(ini, {{"google", "googlekey1"}, {"azure_maps", "azurekey1"}}));
+  map::MapSettings s = map::load_map_settings(ini);
+  CHECK(s.keys.at("google") == "googlekey1");
+  CHECK(s.keys.at("azure_maps") == "azurekey1");
+  CHECK(s.keys.count("thunderforest") == 0);  // missing from the save = removed
+  CHECK(s.base == 0);                          // tf_cycle lost its key: back to OSM
+  CHECK_FALSE(map::save_map_keys(ini, {{"bogus", "whateverkey"}}));
+  CHECK_FALSE(map::save_map_keys(ini, {{"google", "bad key"}}));
+  CHECK(map::load_map_settings(ini).keys.at("google") == "googlekey1");  // rejected saves change nothing
+  std::filesystem::remove(ini);
+}
+
 TEST_CASE("map settings: choose_layer, next_base and save round-trip", "[map]") {
   map::MapSettings s;
   CHECK_FALSE(map::choose_layer(s, provider_index("google_road")));  // no key

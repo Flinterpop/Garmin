@@ -52,6 +52,18 @@ Executables land in `build\apps\Release\`. Everything compiles under `/W4 /WX` w
 
 ## Usage
 
+**Getting started needs no command line.** Unzip the release into a folder of your choice (for example `C:\GarminSync`) and run `gview.exe`. The first time, it offers to **log in to Garmin Connect** (email, password, and the security code if your account uses one) and downloads the last 30 days, or to **copy your data from an earlier version**. After that, everything is on the **Data** menu:
+
+| Data menu | What it does |
+|---|---|
+| **Sync now** (`F6`) | Downloads what is new since the last sync, with a progress window you can stop |
+| **Download new data every morning** | Ticks on a Windows scheduled task that syncs at 06:00 (or as soon as the PC is on and online); untick to remove it |
+| **Log in to Garmin Connect…** | A fresh login, e.g. after Garmin stops accepting the saved one |
+| **Profile → Add a person…** | Someone else's own login and data; **Profile** switches between people |
+| **Copy data from the previous version…** | Brings in a v0.1.3-or-earlier install from AppData (copies, never moves) |
+
+`gsync.exe` does the same from the command line and is what the morning task runs; you never need to start it yourself:
+
 ```text
 gsync login                     # prompts for email, password, MFA code; login saved beside gsync.exe
 gsync --profile ann login       # a second person: their own login and database (see Profiles)
@@ -88,9 +100,9 @@ Everything lives **in the folder that holds `gsync.exe` and `gview.exe`**; nothi
 <exe folder>\tiles\                          map tile cache, shared by all profiles
 ```
 
-Every `gsync` command takes `--profile <name>` (letters, digits, `_`, `-`), before or after the command: `gsync --profile ann login`, `gsync --profile ann sync --days 30`. In `gview`, **Data → Profile** switches between them (`F5` picks up a profile added while it is open) and the choice is remembered.
+In `gview`, **Data → Profile → Add a person…** asks for a name (letters, digits, `_`, `-`), their Garmin login and downloads their last 30 days; **Data → Profile** switches between people and the choice is remembered. Picking someone who has no data yet offers to log them in. On the command line every `gsync` command takes `--profile <name>`, before or after the command: `gsync --profile ann login`, `gsync --profile ann sync --days 30`.
 
-**Upgrading from v0.1.3 or earlier**, which kept everything in `%LOCALAPPDATA%\GarminSync`: run `gsync migrate-appdata` once from the new folder. It copies the login, database and tiles beside the exe (never overwriting anything already there) and leaves the AppData copy untouched for you to delete when you are happy.
+**Upgrading from v0.1.3 or earlier**, which kept everything in `%LOCALAPPDATA%\GarminSync`: start the new `gview.exe` and choose **Copy my data from the previous version** (or **Data → Copy data from the previous version…**; `gsync migrate-appdata` does the same). It copies the login, database and tiles beside the exe (never overwriting anything already there) and leaves the AppData copy untouched for you to delete when you are happy.
 
 ### Map layers
 
@@ -128,7 +140,7 @@ Options: `--profile <name>`, `--data <dir>` (default `data\` in the profile fold
 
 ### Keeping it current
 
-A Windows Task Scheduler job named `GarminSync` runs `gsync sync --days 3 --log sync.log` daily at 06:00 when you are logged on, catching up if the machine was off and skipping when offline. Register it with (for another profile, add `--profile <name>` to the arguments, use its own log name and a different task name):
+Tick **Data → Download new data every morning** in `gview`. That registers a Windows scheduled task, `GarminSync` (or `GarminSync-<name>` for another person), which runs `gsync sync --days 3 --log sync.log` from the program folder daily at 06:00 when you are logged on, catching up if the machine was off and skipping when offline. If a task of that name runs a copy of the program in a different folder, `gview` asks before pointing it here. The equivalent by hand (for another profile, add `--profile <name>` to the arguments, use its own log name and a different task name):
 
 ```powershell
 $dir = 'C:\GarminSync'   # the folder holding gsync.exe
@@ -140,7 +152,7 @@ $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interac
 Register-ScheduledTask -TaskName 'GarminSync' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force
 ```
 
-The OAuth1 token lasts about a year. The bearer token it mints lasts about a day and is renewed automatically; on MFA accounts Garmin rejects the `mfa_token` saved at login on later renewals (403 "The provided MFA token was invalid"), so `gsync` retries the exchange without it and drops it (before v0.1.2 this broke every nightly run from the second day on). If Garmin refuses the saved login outright, `gsync sync` stops after the first refusal, the log ends with `LOGIN REQUIRED`, and the exit code is 3 (the task's *Last Run Result* shows `0x3`). Run `gsync login`, then `gsync sync --from <last good day>` to fill the gap, since the nightly job only looks back 3 days.
+The OAuth1 token lasts about a year. The bearer token it mints lasts about a day and is renewed automatically; on MFA accounts Garmin rejects the `mfa_token` saved at login on later renewals (403 "The provided MFA token was invalid"), so `gsync` retries the exchange without it and drops it (before v0.1.2 this broke every nightly run from the second day on). If Garmin refuses the saved login outright, `gsync sync` stops after the first refusal, the log ends with `LOGIN REQUIRED`, and the exit code is 3 (the task's *Last Run Result* shows `0x3`). Use **Data → Log in to Garmin Connect…** in `gview` (or `gsync login`); it downloads everything since the last good day straight after, since the nightly job only looks back 3 days.
 
 Exit codes: 0 ok, 1 some fetches failed, 2 usage error, 3 login required.
 

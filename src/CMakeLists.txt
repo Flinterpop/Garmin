@@ -62,6 +62,13 @@ add_library(maplib STATIC
 target_include_directories(maplib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(maplib PUBLIC gutil gclib plotlib d2d1 dwrite windowscodecs ole32)
 
+# sync: the Garmin Connect sync, login and migration, shared by gsync and gview
+add_library(synclib STATIC
+  sync/engine.h sync/engine.cpp
+  sync/account.h sync/account.cpp)
+target_include_directories(synclib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(synclib PUBLIC gclib gstore gutil)
+
 # map3d: 3D track view (terrain mesh + HR ribbon, Direct3D 11)
 add_library(map3dlib STATIC
   map3d/terrain.h map3d/terrain.cpp

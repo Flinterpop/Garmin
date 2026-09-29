@@ -15,6 +15,9 @@
 #include <vector>
 
 #include "keys_dialog.h"
+#include "schedule.h"
+#include "sync/account.h"
+#include "sync_ui.h"
 #include "layer_menu.h"
 #include "map/map_settings.h"
 #include "map/map_widget.h"
@@ -59,6 +62,12 @@ constexpr int kIdmZoomOut = 203;
 constexpr int kIdmReload = 301;
 constexpr int kIdmExit = 302;
 constexpr int kIdmMapKeys = 303;
+constexpr int kIdmSyncNow = 304;
+constexpr int kIdmLogin = 305;
+constexpr int kIdmAddPerson = 306;
+constexpr int kIdmMigrate = 307;
+constexpr int kIdmNightly = 308;
+constexpr int kFirstSyncDays = 30;  // a new login downloads this much history
 constexpr int kIdmProfileFirst = 500;  // + index into App::profile_names
 constexpr double kWheelZoomPerNotch = 0.8;
 constexpr double kKeyZoom = 0.7;
@@ -166,9 +175,46 @@ std::filesystem::path db_path_for(const App& a, const std::string& profile) {
   return gutil::profile_dir(gutil::exe_dir(), profile) / L"data" / L"garmin.db";
 }
 
+std::filesystem::path profile_base_of(const std::string& profile) {
+  return gutil::profile_dir(gutil::exe_dir(), profile);
+}
+
+std::filesystem::path data_dir_of(const App& a, const std::string& profile) {
+  return a.data_override.empty() ? profile_base_of(profile) / L"data" : a.data_override;
+}
+
+std::wstring who_label(const std::string& profile) {
+  return profile.empty() ? std::wstring(L"your account") : profile_label(profile);
+}
+
+// Logs the profile in (always if `force_login`, else only when it has no
+// saved login), then downloads its recent data. True when it has data after.
+bool setup_profile(HWND owner, const App& a, const std::string& profile, bool force_login) {
+  const std::filesystem::path base = profile_base_of(profile);
+  if (force_login || !syncer::has_login(base)) {
+    if (!gview::login_dialog(owner, base, who_label(profile))) return false;
+  }
+  gview::sync_with_progress(owner, base, data_dir_of(a, profile), kFirstSyncDays);
+  return std::filesystem::exists(db_path_for(a, profile));
+}
+
+// First start without data: log in and download, or copy a previous install.
+bool first_run(App& a) {
+  const bool can_migrate = a.profile.empty() && a.data_override.empty() && syncer::legacy_install_present();
+  constexpr int kMaxAttempts = 8;
+  for (int i = 0; i < kMaxAttempts; ++i) {
+    const gview::WelcomeChoice c = gview::welcome_dialog(nullptr, data_dir_of(a, a.profile), can_migrate);
+    if (c == gview::WelcomeChoice::kExit) return false;
+    if (c == gview::WelcomeChoice::kLogin) setup_profile(nullptr, a, a.profile, true);
+    if (c == gview::WelcomeChoice::kMigrate) gview::migrate_with_progress(nullptr, profile_base_of(a.profile));
+    if (std::filesystem::exists(a.db_path)) return true;
+  }
+  return false;
+}
+
 // Startup: settings, command line, profiles, then the database to open.
 // A remembered profile without data falls back to the default one; with no
-// database at all, says how to make one and returns false.
+// database at all, the first-run dialog gets the user some.
 bool choose_database(App& a) {
   a.ini_path = map::sidecar_ini_path();
   a.map_settings = map::load_map_settings(a.ini_path);
@@ -180,12 +226,7 @@ bool choose_database(App& a) {
     a.db_path = db_path_for(a, a.profile);
   }
   if (std::filesystem::exists(a.db_path)) return true;
-  MessageBoxW(nullptr, (L"Database not found:\n" + a.db_path.wstring() +
-                        L"\n\nRun `gsync login` and `gsync sync` first (add --profile <name> for "
-                        L"someone else), or pass --data <dir>.")
-                           .c_str(),
-              L"Garmin viewer", MB_ICONERROR);
-  return false;
+  return first_run(a);
 }
 
 float dpi_scale(HWND hwnd) { return static_cast<float>(GetDpiForWindow(hwnd)) / 96.0f; }
@@ -558,7 +599,7 @@ HMENU build_profile_menu(const App& a) {
     if (a.profile_names[i] == a.profile) current = i;
   }
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Add someone:  gsync --profile <name> login");
+  AppendMenuW(m, MF_STRING | state, kIdmAddPerson, L"&Add a person...");
   if (n > 0) {
     CheckMenuRadioItem(m, kIdmProfileFirst, kIdmProfileFirst + static_cast<UINT>(n) - 1,
                        kIdmProfileFirst + static_cast<UINT>(current), MF_BYCOMMAND);
@@ -588,7 +629,16 @@ HMENU build_menu(const App& a) {
   AppendMenuW(view, MF_POPUP, reinterpret_cast<UINT_PTR>(gview::build_layer_menu(a.map_settings)),
               L"Map &layer  (L cycles)");
   HMENU data = CreatePopupMenu();
+  AppendMenuW(data, MF_STRING, kIdmSyncNow, L"&Sync now\tF6");
+  const bool nightly = a.data_override.empty() &&
+                       gview::nightly_state(gutil::exe_dir(), a.profile) == gview::NightlyState::kOn;
+  AppendMenuW(data, MF_STRING | (nightly ? MF_CHECKED : 0) | (a.data_override.empty() ? MF_ENABLED : MF_GRAYED),
+              kIdmNightly, L"&Download new data every morning");
+  AppendMenuW(data, MF_STRING, kIdmLogin, L"&Log in to Garmin Connect...");
   AppendMenuW(data, MF_POPUP, reinterpret_cast<UINT_PTR>(build_profile_menu(a)), L"&Profile");
+  AppendMenuW(data, MF_STRING | (syncer::legacy_install_present() ? MF_ENABLED : MF_GRAYED), kIdmMigrate,
+              L"&Copy data from the previous version...");
+  AppendMenuW(data, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(data, MF_STRING, kIdmReload, L"&Reload database\tF5");
   AppendMenuW(data, MF_STRING, kIdmMapKeys, L"Map API &keys...");
   AppendMenuW(data, MF_SEPARATOR, 0, nullptr);
@@ -737,33 +787,102 @@ void on_map_keys(App& a) {
   apply_layers(a);
 }
 
-// Data > Profile: opens that person's database; a profile without data yet
-// explains how to fill it instead of switching to an empty view.
-void select_profile(App& a, size_t index) {
-  G_REQUIRE_VOID(index < a.profile_names.size() && a.data_override.empty());
-  const std::string& name = a.profile_names[index];
-  if (name == a.profile) return;
-  const std::filesystem::path db = db_path_for(a, name);
-  if (!std::filesystem::exists(db)) {
-    const std::wstring flag = name.empty() ? L"" : L" --profile " + profile_label(name);
-    MessageBoxW(a.hwnd, (L"No data for " + profile_label(name) + L" yet. Run:\n\n  gsync" + flag +
-                         L" login\n  gsync" + flag + L" sync --days 30\n\nthen press F5.")
-                            .c_str(),
-                L"Garmin viewer", MB_ICONINFORMATION);
-    return;
-  }
+void switch_to_profile(App& a, const std::string& name) {
+  G_ASSERT(gutil::valid_profile_name(name));
+  a.profile_names = gutil::list_profiles(gutil::exe_dir());
   a.profile = name;
-  a.db_path = db;
+  a.db_path = db_path_for(a, name);
   remember_profile(a.ini_path, name);
   rebuild_menu(a);
   reload(a);
 }
 
-// F5: picks up profiles added by gsync while gview was open, then reloads.
+// Data > Profile: opens that person's database; one without data yet is
+// offered a login and a first download instead of an empty view.
+void select_profile(App& a, size_t index) {
+  G_REQUIRE_VOID(index < a.profile_names.size() && a.data_override.empty());
+  const std::string name = a.profile_names[index];
+  if (name == a.profile) return;
+  if (!std::filesystem::exists(db_path_for(a, name))) {
+    const std::wstring q = L"There is no data for " + profile_label(name) +
+                           L" yet. Log in to Garmin Connect and download it now?";
+    if (MessageBoxW(a.hwnd, q.c_str(), L"Garmin viewer", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+    if (!setup_profile(a.hwnd, a, name, false)) return;
+  }
+  switch_to_profile(a, name);
+}
+
+// F5: picks up profiles added while gview was open, then reloads.
 void on_reload(App& a) {
   a.profile_names = gutil::list_profiles(gutil::exe_dir());
   rebuild_menu(a);
   reload(a);
+}
+
+// Data > Sync now (F6): logs in first if needed, downloads, then reloads.
+void on_sync_now(App& a) {
+  const std::filesystem::path base = profile_base_of(a.profile);
+  if (!syncer::has_login(base) && !gview::login_dialog(a.hwnd, base, who_label(a.profile))) return;
+  gview::sync_with_progress(a.hwnd, base, data_dir_of(a, a.profile), kFirstSyncDays);
+  reload(a);
+}
+
+// Data > Log in: a new login for the current profile (e.g. after Garmin
+// refused the saved one), then a download to fill any gap.
+void on_login(App& a) {
+  if (!setup_profile(a.hwnd, a, a.profile, true)) return;
+  reload(a);
+}
+
+// Data > Profile > Add a person: name, login, first download, switch to them.
+void on_add_person(App& a) {
+  G_REQUIRE_VOID(a.data_override.empty());
+  std::string name;
+  if (!gview::ask_person_name(a.hwnd, gutil::exe_dir(), name)) return;
+  const std::filesystem::path base = profile_base_of(name);
+  std::error_code ec;
+  std::filesystem::create_directories(base, ec);
+  if (!setup_profile(a.hwnd, a, name, true)) {
+    if (!syncer::has_login(base)) std::filesystem::remove_all(base, ec);  // nothing kept: tidy up
+    on_reload(a);
+    return;
+  }
+  switch_to_profile(a, name);
+}
+
+// Data > Download new data every morning: toggles this profile's scheduled
+// task (gsync.exe from this folder at 06:00). A task that runs another
+// folder's copy is only replaced after asking.
+void on_nightly(App& a) {
+  G_REQUIRE_VOID(a.data_override.empty());
+  const std::filesystem::path exe = gutil::exe_dir();
+  const gview::NightlyState state = gview::nightly_state(exe, a.profile);
+  std::wstring err;
+  bool ok = true;
+  if (state == gview::NightlyState::kOn) {
+    ok = gview::disable_nightly(a.profile, err);
+  } else {
+    if (state == gview::NightlyState::kOtherFolder &&
+        MessageBoxW(a.hwnd, L"A morning download is already set up for another copy of this program in a "
+                            L"different folder. Point it at this folder instead?",
+                    L"Garmin viewer", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+      return;
+    }
+    ok = gview::enable_nightly(exe, a.profile, err);
+    if (ok) {
+      MessageBoxW(a.hwnd, L"New data will be downloaded every morning at 6:00, or as soon as the PC is on "
+                          L"and online after that.",
+                  L"Garmin viewer", MB_ICONINFORMATION);
+    }
+  }
+  if (!ok) MessageBoxW(a.hwnd, err.c_str(), L"Garmin viewer", MB_ICONWARNING);
+  rebuild_menu(a);
+}
+
+// Data > Copy data from the previous version: the v0.1.3 AppData install.
+void on_migrate(App& a) {
+  gview::migrate_with_progress(a.hwnd, profile_base_of(""));
+  on_reload(a);
 }
 
 // Returns the mode for a View menu id / digit key, or false if it is not one.
@@ -809,6 +928,21 @@ void on_command(App& a, HWND hwnd, WPARAM wp) {
       return;
     case kIdmMapKeys:
       on_map_keys(a);
+      return;
+    case kIdmSyncNow:
+      on_sync_now(a);
+      return;
+    case kIdmLogin:
+      on_login(a);
+      return;
+    case kIdmAddPerson:
+      on_add_person(a);
+      return;
+    case kIdmMigrate:
+      on_migrate(a);
+      return;
+    case kIdmNightly:
+      on_nightly(a);
       return;
     case kIdmExit:
       DestroyWindow(hwnd);
@@ -919,6 +1053,7 @@ bool on_key_down(App& a, WPARAM key) {
     case VK_SUBTRACT:
     case VK_OEM_MINUS: a.widget.zoom_at(mid, 1.0 / kKeyZoom); return true;
     case VK_F5: on_reload(a); return true;
+    case VK_F6: on_sync_now(a); return true;
     case 'L':
       a.map_settings.base = map::next_base(a.map_settings);
       apply_layers(a);

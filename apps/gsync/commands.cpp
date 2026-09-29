@@ -1,7 +1,6 @@
 #include "commands.h"
 
 #include <windows.h>
-#include <shlobj.h>
 
 #include <algorithm>
 #include <cctype>
@@ -15,24 +14,21 @@
 #include "gc/token_store.h"
 #include "store/db.h"
 #include "store/importer.h"
+#include "sync/account.h"
+#include "sync/engine.h"
 #include "util/assert.h"
 #include "util/console.h"
 #include "util/file_util.h"
 #include "util/time_util.h"
-#include "util/zip_reader.h"
 
 namespace cmd {
 
 using nlohmann::json;
+using syncer::kMaxActivities;
+using syncer::kMaxDays;
 
 namespace {
 
-constexpr int kMaxDays = 3660;            // 10 years per run
-constexpr int kMaxActivities = 5000;
-constexpr int kActivityPage = 50;
-constexpr DWORD kPoliteDelayMs = 300;     // between API calls
-constexpr int kWeightChunkDays = 31;
-constexpr int kExitLoginRequired = 3;     // 1 = some fetches failed, 2 = usage
 constexpr char kUsage[] =
       "usage: gsync [options] <command> [options]\n"
       "commands:\n"
@@ -63,6 +59,11 @@ constexpr char kUsage[] =
 
 void usage_text() { std::fputs(kUsage, stderr); }
 
+// Progress lines from the shared sync library go to the console (errors to stderr).
+void console_report(bool error, const std::string& line) {
+  std::fprintf(error ? stderr : stdout, "%s\n", line.c_str());
+}
+
 // The profile's folder beside the exe: logins and data never go to AppData.
 std::filesystem::path profile_base(const Options& o) {
   G_ASSERT(gutil::valid_profile_name(o.profile));
@@ -80,26 +81,21 @@ std::string profile_label(const std::string& profile) {
   return profile.empty() ? std::string("(default)") : profile;
 }
 
+std::string profile_flag(const Options& o) {
+  return o.profile.empty() ? std::string() : " --profile " + o.profile;
+}
+
 bool open_db(const Options& o, store::Db& db, std::filesystem::path& data_dir) {
   data_dir = resolve_data_dir(o);
-  std::error_code ec;
-  std::filesystem::create_directories(data_dir, ec);
-  std::string err;
-  if (!db.open(data_dir / "garmin.db", err)) {
-    std::fprintf(stderr, "error: %s\n", err.c_str());
-    return false;
-  }
-  return true;
+  return syncer::open_db(data_dir, db, console_report);
 }
 
 // Loads saved tokens and returns a client, or null with a message printed.
-std::unique_ptr<gc::GarminClient> make_client(const Options& o, bool require_login) {
+std::unique_ptr<gc::GarminClient> make_client(const Options& o) {
   gc::Tokens t;
   std::string err;
-  const bool loaded = gc::load_tokens(gc::token_path(profile_base(o)), t, err);
-  if (!loaded && require_login) {
-    const std::string flag = o.profile.empty() ? std::string() : " --profile " + o.profile;
-    std::fprintf(stderr, "error: %s\nrun `gsync%s login` first\n", err.c_str(), flag.c_str());
+  if (!gc::load_tokens(gc::token_path(profile_base(o)), t, err)) {
+    std::fprintf(stderr, "error: %s\nrun `gsync%s login` first\n", err.c_str(), profile_flag(o).c_str());
     return nullptr;
   }
   return std::make_unique<gc::GarminClient>(t);
@@ -115,255 +111,10 @@ void persist_tokens(const Options& o, gc::GarminClient& client) {
   client.clear_dirty();
 }
 
-void polite_delay() { Sleep(kPoliteDelayMs); }
-
 std::string mfa_prompt() {
   std::string code;
   if (!gutil::read_line("MFA code: ", false, code)) return std::string();
   return code;
-}
-
-// Saves raw JSON next to the database for debugging / re-import.
-void save_json(const std::filesystem::path& data_dir, const std::string& kind,
-               const std::string& key, const json& j) {
-  const std::filesystem::path p = data_dir / "json" / kind / (key + ".json");
-  if (!gutil::write_text_file(p, j.dump(2))) {
-    std::fprintf(stderr, "warning: could not write %s\n", p.string().c_str());
-  }
-}
-
-struct SyncContext {
-  const Options& opt;
-  gc::GarminClient& client;
-  store::Db& db;
-  std::filesystem::path data_dir;
-  std::string today;
-  int failures = 0;
-  int64_t rows = 0;
-};
-
-using DayFetch = bool (gc::GarminClient::*)(const std::string&, json&, std::string&);
-using DayImport = bool (*)(store::Db&, const std::string&, const json&, store::ImportCounts&,
-                           std::string&);
-
-// One dated endpoint: fetch, save, import, log.
-void sync_day_kind(SyncContext& cx, const char* kind, const std::string& date, DayFetch fetch,
-                   DayImport import) {
-  if (cx.client.login_required()) return;  // already reported once
-  const bool final_day = date < cx.today;  // today's data is still changing
-  if (!cx.opt.force && final_day && store::sync_done(cx.db, kind, date)) return;
-  json j;
-  std::string err;
-  if (!(cx.client.*fetch)(date, j, err)) {
-    std::fprintf(stderr, "  %s %s: %s\n", kind, date.c_str(), err.c_str());
-    ++cx.failures;
-    return;
-  }
-  polite_delay();
-  if (!j.is_null()) save_json(cx.data_dir, kind, date, j);
-  store::ImportCounts c;
-  if (!import(cx.db, date, j, c, err)) {
-    std::fprintf(stderr, "  %s %s: import failed: %s\n", kind, date.c_str(), err.c_str());
-    ++cx.failures;
-    return;
-  }
-  cx.rows += c.rows;
-  if (final_day) store::mark_sync(cx.db, kind, date, true, err);
-  std::printf("  %-10s %s  %lld rows\n", kind, date.c_str(), static_cast<long long>(c.rows));
-}
-
-// Adapters so every import has the (db, date, json, counts, err) shape.
-bool import_hr_adapter(store::Db& db, const std::string&, const json& j, store::ImportCounts& c,
-                       std::string& err) {
-  return store::import_heart_rate(db, j, c, err);
-}
-bool import_stress_adapter(store::Db& db, const std::string&, const json& j,
-                           store::ImportCounts& c, std::string& err) {
-  return store::import_stress(db, j, c, err);
-}
-
-// Extracts FIT entries of a downloaded ZIP, saves them under `dir`, imports.
-void import_zip(SyncContext& cx, const std::vector<uint8_t>& zip,
-                const std::filesystem::path& dir, int64_t activity_id, const char* what) {
-  std::vector<gutil::ZipEntry> entries;
-  std::string err;
-  if (!gutil::zip_extract_all(zip, entries, err)) {
-    std::fprintf(stderr, "  %s: %s\n", what, err.c_str());
-    ++cx.failures;
-    return;
-  }
-  for (const gutil::ZipEntry& e : entries) {
-    const std::filesystem::path name = std::filesystem::path(e.name).filename();
-    std::string ext = name.extension().string();
-    for (char& ch : ext) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    if (ext != ".fit") continue;
-    const std::filesystem::path p = dir / name;
-    if (!gutil::write_file(p, e.data.data(), e.data.size())) {
-      std::fprintf(stderr, "  %s: cannot write %s\n", what, p.string().c_str());
-      ++cx.failures;
-      continue;
-    }
-    store::ImportCounts c;
-    if (!store::import_fit(cx.db, p.string(), e.data, activity_id, cx.opt.force, c, err)) {
-      std::fprintf(stderr, "  %s: %s\n", what, err.c_str());
-      ++cx.failures;
-      continue;
-    }
-    cx.rows += c.rows;
-    std::printf("  fit        %-40s %lld msgs %lld rows%s\n", name.string().c_str(),
-                static_cast<long long>(c.messages), static_cast<long long>(c.rows),
-                c.skipped ? " (already imported)" : "");
-  }
-}
-
-void sync_wellness_fit(SyncContext& cx, const std::string& date) {
-  if (cx.client.login_required()) return;  // already reported once
-  const char* kind = "wellness_fit";
-  const bool final_day = date < cx.today;
-  if (!cx.opt.force && final_day && store::sync_done(cx.db, kind, date)) return;
-  std::vector<uint8_t> zip;
-  std::string err;
-  if (!cx.client.download_wellness_zip(date, zip, err)) {
-    // 404 simply means no monitoring files for that day.
-    const bool not_found = err.find("HTTP 404") != std::string::npos;
-    if (!not_found) {
-      std::fprintf(stderr, "  %s %s: %s\n", kind, date.c_str(), err.c_str());
-      ++cx.failures;
-    } else if (final_day) {
-      store::mark_sync(cx.db, kind, date, true, err);
-    }
-    polite_delay();
-    return;
-  }
-  polite_delay();
-  import_zip(cx, zip, cx.data_dir / "fit" / "wellness" / date, 0, kind);
-  if (final_day) store::mark_sync(cx.db, kind, date, true, err);
-}
-
-void sync_weight(SyncContext& cx, const std::string& from, const std::string& to) {
-  std::string start = from;
-  for (int i = 0; i < kMaxDays / kWeightChunkDays + 1 && start <= to; ++i) {
-    std::string end = gutil::add_days(start, kWeightChunkDays - 1);
-    if (end > to) end = to;
-    json j;
-    std::string err;
-    if (!cx.client.weight_range(start, end, j, err)) {
-      std::fprintf(stderr, "  weight %s..%s: %s\n", start.c_str(), end.c_str(), err.c_str());
-      ++cx.failures;
-    } else {
-      save_json(cx.data_dir, "weight", start + "_" + end, j);
-      store::ImportCounts c;
-      if (!store::import_weight(cx.db, j, c, err)) {
-        std::fprintf(stderr, "  weight: import failed: %s\n", err.c_str());
-        ++cx.failures;
-      } else {
-        cx.rows += c.rows;
-        std::printf("  %-10s %s..%s  %lld rows\n", "weight", start.c_str(), end.c_str(),
-                    static_cast<long long>(c.rows));
-      }
-    }
-    polite_delay();
-    start = gutil::add_days(end, 1);
-  }
-}
-
-void sync_activities(SyncContext& cx, int64_t from_ts) {
-  G_ASSERT(from_ts > 0);
-  G_ASSERT(cx.opt.max_activities >= 0);
-  const int max_items = std::min(cx.opt.max_activities, kMaxActivities);
-  std::vector<int64_t> ids;
-  bool more = true;
-  for (int start = 0; start < max_items && more; start += kActivityPage) {
-    json page;
-    std::string err;
-    const int limit = std::min(kActivityPage, max_items - start);
-    if (!cx.client.activities(start, limit, page, err)) {
-      std::fprintf(stderr, "  activities: %s\n", err.c_str());
-      ++cx.failures;
-      return;
-    }
-    polite_delay();
-    if (!page.is_array() || page.empty()) break;
-    store::ImportCounts c;
-    if (!store::import_activity_list(cx.db, page, c, err)) {
-      std::fprintf(stderr, "  activities: import failed: %s\n", err.c_str());
-      ++cx.failures;
-      return;
-    }
-    cx.rows += c.rows;
-    for (const json& a : page) {
-      int64_t ts = 0;
-      const std::string start_gmt = a.value("startTimeGMT", "");
-      if (gutil::parse_datetime(start_gmt, ts) && ts < from_ts) {
-        more = false;
-        break;
-      }
-      if (a.contains("activityId") && a["activityId"].is_number_integer()) {
-        ids.push_back(a["activityId"].get<int64_t>());
-      }
-    }
-    if (static_cast<int>(page.size()) < limit) more = false;
-  }
-  std::printf("  %-10s %zu in range\n", "activities", ids.size());
-  if (cx.opt.no_fit) return;
-
-  const std::filesystem::path dir = cx.data_dir / "fit" / "activities";
-  for (const int64_t id : ids) {
-    const std::filesystem::path p = dir / (std::to_string(id) + "_ACTIVITY.fit");
-    if (!cx.opt.force && std::filesystem::exists(p)) {
-      // Already on disk; make sure it is imported (cheap if it is).
-      std::vector<uint8_t> bytes;
-      store::ImportCounts c;
-      std::string err;
-      if (gutil::read_file(p, bytes) &&
-          !store::import_fit(cx.db, p.string(), bytes, id, false, c, err)) {
-        std::fprintf(stderr, "  activity %lld: %s\n", static_cast<long long>(id), err.c_str());
-        ++cx.failures;
-      }
-      continue;
-    }
-    std::vector<uint8_t> zip;
-    std::string err;
-    if (!cx.client.download_activity_zip(id, zip, err)) {
-      std::fprintf(stderr, "  activity %lld: %s\n", static_cast<long long>(id), err.c_str());
-      ++cx.failures;
-      polite_delay();
-      continue;
-    }
-    polite_delay();
-    import_zip(cx, zip, dir, id, "activity");
-  }
-}
-
-// Imports every readings_*.csv in the user's Downloads folder (the Omron
-// app exports there). Idempotent, so it runs on every sync.
-int import_bp_downloads(store::Db& db, int64_t& rows) {
-  PWSTR raw = nullptr;
-  if (FAILED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &raw)) || raw == nullptr) return 0;
-  const std::filesystem::path downloads(raw);
-  CoTaskMemFree(raw);
-  int failures = 0;
-  std::error_code ec;
-  int seen = 0;
-  for (const auto& entry : std::filesystem::directory_iterator(downloads, ec)) {
-    if (!entry.is_regular_file() || ++seen > 20000) continue;
-    const std::string name = entry.path().filename().string();
-    if (name.rfind("readings_", 0) != 0 || entry.path().extension() != ".csv") continue;
-    std::string text;
-    store::ImportCounts c;
-    std::string err;
-    if (!gutil::read_text_file(entry.path(), text) || !store::import_bp_csv(db, text, c, err)) {
-      std::fprintf(stderr, "  blood pressure %s: %s\n", name.c_str(), err.c_str());
-      ++failures;
-      continue;
-    }
-    rows += c.rows;
-    if (c.rows > 0) {
-      std::printf("  %-10s %s  %lld new readings\n", "bp", name.c_str(),
-                  static_cast<long long>(c.rows));
-    }
-  }
-  return failures;
 }
 
 int import_one_path(store::Db& db, const std::filesystem::path& p, bool force, int& files,
@@ -478,22 +229,18 @@ bool parse(int argc, char** argv, Options& o, std::string& err) {
 // ---------------------------------------------------------------- commands
 
 int run_login(const Options& o) {
-  auto client = make_client(o, false);
   std::printf("profile: %s\n", profile_label(o.profile).c_str());
-  G_ASSERT(client != nullptr);
   std::string email;
   std::string password;
   if (!gutil::read_line("Garmin Connect email: ", false, email)) return 1;
   if (!gutil::read_line("Password: ", true, password)) return 1;
-  std::string err;
-  if (!client->login(email, password, mfa_prompt, err)) {
-    std::fprintf(stderr, "login failed: %s\n", err.c_str());
+  const syncer::LoginResult r = syncer::login(profile_base(o), email, password, mfa_prompt);
+  G_ASSERT(password.empty());  // zeroed by login()
+  if (!r.ok) {
+    std::fprintf(stderr, "login failed: %s\n", r.error.c_str());
     return 1;
   }
-  SecureZeroMemory(password.data(), password.size());
-  persist_tokens(o, *client);
-  std::printf("signed in as %s (%s)\n", client->tokens().full_name.c_str(),
-              client->tokens().display_name.c_str());
+  std::printf("signed in as %s\n", r.who.c_str());
   std::printf("tokens saved to %s\n", gc::token_path(profile_base(o)).string().c_str());
   return 0;
 }
@@ -510,7 +257,7 @@ int run_logout(const Options& o) {
 }
 
 int run_whoami(const Options& o) {
-  auto client = make_client(o, true);
+  auto client = make_client(o);
   if (!client) return 1;
   std::string err;
   if (!client->fetch_profile(err)) {
@@ -525,52 +272,27 @@ int run_whoami(const Options& o) {
 }
 
 int run_sync(const Options& o) {
-  auto client = make_client(o, true);
-  if (!client) return 1;
-  store::Db db;
-  std::filesystem::path data_dir;
-  if (!open_db(o, db, data_dir)) return 1;
-
+  syncer::SyncOptions so;
+  so.profile_base = profile_base(o);
+  so.data_dir = resolve_data_dir(o);
   const std::string today = gutil::date_string_local(gutil::now_unix());
-  const std::string to = o.to_date.empty() ? today : o.to_date;
-  const std::string from = o.from_date.empty() ? gutil::add_days(to, -(o.days - 1)) : o.from_date;
-  if (from > to) {
+  so.to = o.to_date.empty() ? today : o.to_date;
+  so.from = o.from_date.empty() ? gutil::add_days(so.to, -(o.days - 1)) : o.from_date;
+  if (so.from > so.to) {
     std::fprintf(stderr, "error: --from is after --to\n");
     return 2;
   }
-  std::printf("syncing %s .. %s into %s\n", from.c_str(), to.c_str(), data_dir.string().c_str());
-
-  SyncContext cx{o, *client, db, data_dir, today};
-  std::string date = from;
-  for (int i = 0; i < kMaxDays && date <= to; ++i) {
-    sync_day_kind(cx, "summary", date, &gc::GarminClient::daily_summary,
-                  &store::import_daily_summary);
-    sync_day_kind(cx, "heartrate", date, &gc::GarminClient::daily_heart_rate, &import_hr_adapter);
-    sync_day_kind(cx, "sleep", date, &gc::GarminClient::daily_sleep, &store::import_sleep);
-    sync_day_kind(cx, "stress", date, &gc::GarminClient::daily_stress, &import_stress_adapter);
-    sync_day_kind(cx, "hrv", date, &gc::GarminClient::daily_hrv, &store::import_hrv);
-    if (!o.no_fit) sync_wellness_fit(cx, date);
-    persist_tokens(o, *client);
-    if (client->login_required()) break;
-    date = gutil::add_days(date, 1);
-  }
-  if (!client->login_required()) sync_weight(cx, from, to);
-  cx.failures += import_bp_downloads(db, cx.rows);  // local files, no login needed
-  int64_t from_ts = 0;
-  const bool parsed = gutil::parse_date(from, from_ts);
-  G_ASSERT(parsed);
-  if (o.max_activities > 0 && !client->login_required()) sync_activities(cx, from_ts);
-  persist_tokens(o, *client);
-
-  std::printf("done: %lld rows written, %d failures\n", static_cast<long long>(cx.rows),
-              cx.failures);
-  if (client->login_required()) {
-    std::printf("LOGIN REQUIRED: Garmin refused the saved login; run `gsync login`, then\n"
+  so.max_activities = o.max_activities;
+  so.no_fit = o.no_fit;
+  so.force = o.force;
+  const syncer::SyncResult r = syncer::run_sync(so, console_report);
+  if (r.not_logged_in) std::fprintf(stderr, "run `gsync%s login` first\n", profile_flag(o).c_str());
+  if (r.login_required) {
+    std::printf("LOGIN REQUIRED: Garmin refused the saved login; run `gsync%s login`, then\n"
                 "`gsync sync --from <last good day>` to fill the gap (exit %d)\n",
-                kExitLoginRequired);
-    return kExitLoginRequired;
+                profile_flag(o).c_str(), syncer::kExitLoginRequired);
   }
-  return cx.failures == 0 ? 0 : 1;
+  return syncer::exit_code(r);
 }
 
 int run_import(const Options& o) {
@@ -596,7 +318,7 @@ int run_get(const Options& o) {
     std::fprintf(stderr, "error: get needs an API path starting with '/'\n");
     return 2;
   }
-  auto client = make_client(o, true);
+  auto client = make_client(o);
   if (!client) return 1;
   std::string err;
   std::vector<uint8_t> bytes;
@@ -629,7 +351,7 @@ int run_import_bp(const Options& o) {
   int failures = 0;
   int64_t rows = 0;
   if (o.args.empty()) {
-    failures = import_bp_downloads(db, rows);
+    failures = syncer::import_bp_downloads(db, rows, console_report);
   } else {
     for (const std::string& a : o.args) {
       std::string text;
@@ -677,60 +399,19 @@ int run_profiles(const Options&) {
   for (size_t i = 0; i < names.size() && i < gutil::kMaxProfiles + 1; ++i) {
     const std::filesystem::path base = gutil::profile_dir(exe, names[i]);
     std::error_code ec;
-    const bool login = std::filesystem::exists(gc::token_path(base), ec);
     const bool data = std::filesystem::exists(base / "data" / "garmin.db", ec);
     std::printf("  %-20s login: %-3s  database: %s\n", profile_label(names[i]).c_str(),
-                login ? "yes" : "no", data ? "yes" : "no");
+                syncer::has_login(base) ? "yes" : "no", data ? "yes" : "no");
   }
-  std::printf("add one with: gsync --profile <name> login\n");
+  std::printf("add one with: gsync --profile <name> login   (or Data > Profile in gview)\n");
   return 0;
 }
 
-namespace {
-
-// Copies `from` to `to` unless `to` already exists; reports what happened.
-bool copy_if_absent(const std::filesystem::path& from, const std::filesystem::path& to) {
-  std::error_code ec;
-  if (!std::filesystem::exists(from, ec)) {
-    std::printf("  %-10s nothing to copy\n", from.filename().string().c_str());
-    return true;
-  }
-  if (std::filesystem::exists(to, ec)) {
-    std::printf("  %-10s already at %s, left alone\n", to.filename().string().c_str(),
-                to.string().c_str());
-    return true;
-  }
-  std::filesystem::copy(from, to,
-                        std::filesystem::copy_options::recursive |
-                            std::filesystem::copy_options::copy_symlinks,
-                        ec);
-  if (ec) {
-    std::fprintf(stderr, "  %-10s copy failed: %s\n", from.filename().string().c_str(),
-                 ec.message().c_str());
-    return false;
-  }
-  std::printf("  %-10s copied to %s\n", to.filename().string().c_str(), to.string().c_str());
-  return true;
-}
-
-}  // namespace
-
 // One-time move off AppData: copies (never moves) the v0.1.3 layout into the
-// default profile beside the exe. The original stays until the user deletes it.
+// profile beside the exe. The original stays until the user deletes it.
 int run_migrate_appdata(const Options& o) {
   G_ASSERT(o.profile.empty() || gutil::valid_profile_name(o.profile));
-  const std::filesystem::path from = gutil::legacy_appdata_dir();
-  const std::filesystem::path to = profile_base(o);
-  G_REQUIRE_RET(!from.empty() && !to.empty(), 1);
-  std::printf("copying %s -> %s\n", from.string().c_str(), to.string().c_str());
-  std::error_code ec;
-  std::filesystem::create_directories(to, ec);
-  bool ok = copy_if_absent(from / "tokens.bin", gc::token_path(to));
-  ok = copy_if_absent(from / "data", to / "data") && ok;
-  ok = copy_if_absent(from / "tiles", gutil::exe_dir() / "tiles") && ok;  // tiles are shared
-  std::printf(ok ? "done; the AppData copy is untouched and can be deleted once you are happy\n"
-                 : "some items failed; nothing was removed from AppData\n");
-  return ok ? 0 : 1;
+  return syncer::migrate_appdata(profile_base(o), console_report) ? 0 : 1;
 }
 
 }  // namespace cmd

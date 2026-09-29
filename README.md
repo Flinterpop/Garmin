@@ -12,6 +12,8 @@
 
 Local, C++/Win32 tooling for pulling health data off Garmin devices and out of Garmin Connect, and keeping it in a SQLite database shaped for plotting. No Python, no cloud service of our own: everything runs on this machine and talks only to Garmin.
 
+<img width="2511" height="890" alt="image" src="https://github.com/user-attachments/assets/0f1d0201-dd61-40d7-854b-219ef89385ef" />
+
 <img width="1380" height="890" alt="image" src="https://github.com/user-attachments/assets/f2ff7c5c-25ae-4d11-9169-01d8840a0df3" />
 
 

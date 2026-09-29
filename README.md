@@ -12,6 +12,9 @@
 
 Local, C++/Win32 tooling for pulling health data off Garmin devices and out of Garmin Connect, and keeping it in a SQLite database shaped for plotting. No Python, no cloud service of our own: everything runs on this machine and talks only to Garmin.
 
+<img width="1380" height="890" alt="image" src="https://github.com/user-attachments/assets/f2ff7c5c-25ae-4d11-9169-01d8840a0df3" />
+
+
 Three executables:
 
 - **`gsync`** — signs in to Garmin Connect the way the mobile app does, pulls daily summaries, heart rate, sleep, stress / Body Battery, HRV, body composition (the Index scale), the activity list, per-activity FIT files and the daily wellness (monitoring) FIT files, and imports it all into `garmin.db`. Also imports FIT files copied straight off a watch over USB.

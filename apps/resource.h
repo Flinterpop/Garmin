@@ -7,5 +7,5 @@
 // CMakeLists.txt and the release badge in README.md.
 #define APP_VERSION_MAJOR 0
 #define APP_VERSION_MINOR 1
-#define APP_VERSION_PATCH 4
-#define APP_VERSION_STRING "0.1.4"
+#define APP_VERSION_PATCH 5
+#define APP_VERSION_STRING "0.1.5"

@@ -72,7 +72,8 @@ MapSettings load_map_settings(const std::filesystem::path& ini) {
   if (ini.empty() || !std::filesystem::exists(ini, ec)) return s;
   read_keys(ini, s);
   const size_t base = provider_index(trim(read_value(ini, L"map", L"base")));
-  if (base != SIZE_MAX && !tile_providers()[base].overlay && provider_available(s, base)) {
+  if (base != SIZE_MAX && !tile_providers()[base].overlay && !tile_providers()[base].hidden &&
+      provider_available(s, base)) {
     s.base = base;
   }
   read_overlays(read_value(ini, L"map", L"overlays"), s);
@@ -148,7 +149,7 @@ bool provider_available(const MapSettings& s, size_t provider) {
 bool choose_layer(MapSettings& s, size_t provider) {
   const std::vector<TileProvider>& t = tile_providers();
   G_REQUIRE_RET(provider < t.size(), false);
-  if (!provider_available(s, provider)) return false;
+  if (t[provider].hidden || !provider_available(s, provider)) return false;
   if (!t[provider].overlay) {
     if (s.base == provider) return false;
     s.base = provider;
@@ -169,7 +170,7 @@ size_t next_base(const MapSettings& s) {
   G_ASSERT(s.base < t.size());
   for (size_t step = 1; step <= t.size() && step <= kMaxProviders; ++step) {
     const size_t i = (s.base + step) % t.size();
-    if (!t[i].overlay && provider_available(s, i)) return i;
+    if (!t[i].overlay && !t[i].hidden && provider_available(s, i)) return i;
   }
   return s.base;
 }

@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "map/hr_color.h"
 #include "map/mercator.h"
 #include "map/tile_cache.h"
 #include "plot/plot_types.h"
@@ -34,7 +35,6 @@ struct Track {
 };
 
 constexpr size_t kMaxTrackPoints = 200000;
-constexpr size_t kColorBuckets = 16;
 constexpr size_t kMaxBitmaps = 512;
 
 // Index of the point whose elapsed_s is closest to `t`; points must be in
@@ -114,9 +114,7 @@ class MapWidget {
 
   Track track_;
   std::vector<WorldPoint> world_;  // per point
-  double hr_lo_ = 0.0;
-  double hr_hi_ = 0.0;
-  bool has_hr_ = false;
+  HrRange hr_;
 
   D2D1_RECT_F rect_{};
   float scale_ = 1.0f;

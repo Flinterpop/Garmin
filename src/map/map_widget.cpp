@@ -31,7 +31,6 @@ constexpr float kScaleBarMax = 140.0f;
 constexpr Color kBg = rgb(0xE9E9E9);
 constexpr Color kTilePlaceholder = rgb(0xDDDDDD);
 constexpr Color kHalo = rgb(0xFFFFFF, 0.85f);
-constexpr Color kNoHr = rgb(0x555555);
 constexpr Color kStart = rgb(0x2CA02C);
 constexpr Color kFinish = rgb(0xD62728);
 constexpr Color kLap = rgb(0xFFFFFF);
@@ -39,15 +38,7 @@ constexpr Color kText = rgb(0x222222);
 constexpr Color kBox = rgb(0xFFFFFF, 0.9f);
 constexpr Color kBoxBorder = rgb(0x999999);
 
-// Blue -> cyan -> green -> yellow -> red, sampled into kColorBuckets.
-constexpr Color kStops[] = {rgb(0x3B82F6), rgb(0x06B6D4), rgb(0x22C55E), rgb(0xEAB308),
-                            rgb(0xDC2626)};
-
 D2D1_COLOR_F to_d2d(const Color& c) { return D2D1::ColorF(c.r, c.g, c.b, c.a); }
-
-Color lerp(const Color& a, const Color& b, float t) {
-  return Color{a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, 1.0f};
-}
 
 std::string pace_label(double speed_mps) {
   if (speed_mps < 0.3) return "-";
@@ -105,18 +96,8 @@ void MapWidget::set_track(Track t) {
   track_ = std::move(t);
   world_.clear();
   world_.reserve(track_.points.size());
-  std::vector<double> hrs;
-  for (const TrackPoint& p : track_.points) {
-    world_.push_back(to_world(p.lat, p.lon));
-    if (p.hr > 0.0) hrs.push_back(p.hr);
-  }
-  has_hr_ = hrs.size() >= 10;
-  if (has_hr_) {
-    std::sort(hrs.begin(), hrs.end());
-    hr_lo_ = hrs[hrs.size() / 20];              // 5th percentile
-    hr_hi_ = hrs[hrs.size() - 1 - hrs.size() / 20];  // 95th
-    if (hr_hi_ - hr_lo_ < 10.0) hr_hi_ = hr_lo_ + 10.0;
-  }
+  for (const TrackPoint& p : track_.points) world_.push_back(to_world(p.lat, p.lon));
+  hr_ = hr_range(track_.points);
   fit();
 }
 
@@ -353,20 +334,9 @@ void MapWidget::draw_layer(ID2D1RenderTarget* rt, size_t layer, bool placeholder
   }
 }
 
-size_t MapWidget::bucket_of(double hr) const {
-  if (!has_hr_ || hr <= 0.0) return kColorBuckets;  // sentinel: no HR
-  const double f = std::clamp((hr - hr_lo_) / (hr_hi_ - hr_lo_), 0.0, 0.999);
-  return static_cast<size_t>(f * static_cast<double>(kColorBuckets));
-}
+size_t MapWidget::bucket_of(double hr) const { return hr_bucket(hr, hr_); }
 
-Color MapWidget::bucket_color(size_t b) const {
-  if (b >= kColorBuckets) return kNoHr;
-  constexpr size_t n = sizeof(kStops) / sizeof(kStops[0]);
-  const float pos = (static_cast<float>(b) + 0.5f) / static_cast<float>(kColorBuckets) *
-                    static_cast<float>(n - 1);
-  const size_t i = std::min(static_cast<size_t>(pos), n - 2);
-  return lerp(kStops[i], kStops[i + 1], pos - static_cast<float>(i));
-}
+Color MapWidget::bucket_color(size_t b) const { return hr_bucket_color(b); }
 
 void MapWidget::draw_track(ID2D1RenderTarget* rt) {
   const size_t n = world_.size();
@@ -451,7 +421,7 @@ void MapWidget::draw_markers(ID2D1RenderTarget* rt) {
 }
 
 void MapWidget::draw_legend(ID2D1RenderTarget* rt) {
-  if (!has_hr_) return;
+  if (!hr_.valid) return;
   const float w = s(kLegendWidth);
   const float x = rect_.right - w - s(kPad * 2);
   const float y = rect_.top + s(kPad * 2);
@@ -470,8 +440,8 @@ void MapWidget::draw_legend(ID2D1RenderTarget* rt) {
   }
   char lo[16] = {};
   char hi[16] = {};
-  std::snprintf(lo, sizeof(lo), "%.0f", hr_lo_);
-  std::snprintf(hi, sizeof(hi), "%.0f", hr_hi_);
+  std::snprintf(lo, sizeof(lo), "%.0f", hr_.lo);
+  std::snprintf(hi, sizeof(hi), "%.0f", hr_.hi);
   text(rt, plot::widen(lo), D2D1::RectF(x, bar_y + s(8.0f), x + w / 2, bar_y + s(8.0f + kLine)),
        DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, kText);
   text(rt, plot::widen(hi), D2D1::RectF(x + w / 2, bar_y + s(8.0f), x + w, bar_y + s(8.0f + kLine)),

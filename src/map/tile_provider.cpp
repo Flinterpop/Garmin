@@ -100,6 +100,12 @@ std::vector<TileProvider> build_table() {
   t.push_back(overlay(make("wmt_cycling", "Cycling routes (Waymarked Trails)",
                            "https://tile.waymarkedtrails.org/cycling/{z}/{x}/{y}.png", 18,
                            "Cycling routes \xC2\xA9 waymarkedtrails.org")));
+  // Last, and hidden: height data for the 3D view, not a map layer.
+  TileProvider terrain = make(kTerrainProviderId, "Terrain heights",
+                              "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png",
+                              kTerrainMaxZoom, "Terrain: Mapzen / AWS Terrain Tiles");
+  terrain.hidden = true;
+  t.push_back(terrain);
   G_ASSERT(t.size() <= kMaxProviders);
   G_ASSERT(t.front().id == "osm");
   return t;

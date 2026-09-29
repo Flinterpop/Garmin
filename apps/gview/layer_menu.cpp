@@ -29,11 +29,11 @@ HMENU build_layer_menu(const map::MapSettings& s) {
   G_REQUIRE_RET(m != nullptr, nullptr);
   const std::vector<map::TileProvider>& t = map::tile_providers();
   for (size_t i = 0; i < t.size() && i < map::kMaxProviders; ++i) {
-    if (!t[i].overlay) append_item(m, s, i);
+    if (!t[i].overlay && !t[i].hidden) append_item(m, s, i);
   }
   AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
   for (size_t i = 0; i < t.size() && i < map::kMaxProviders; ++i) {
-    if (t[i].overlay) append_item(m, s, i);
+    if (t[i].overlay && !t[i].hidden) append_item(m, s, i);
   }
   return m;
 }

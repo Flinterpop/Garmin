@@ -54,9 +54,19 @@ target_link_libraries(analysislib PUBLIC gutil)
 # map: OSM tiles + GPS track rendering (Direct2D, WIC)
 add_library(maplib STATIC
   map/mercator.h map/mercator.cpp
+  map/hr_color.h map/hr_color.cpp
   map/tile_provider.h map/tile_provider.cpp
   map/map_settings.h map/map_settings.cpp
   map/tile_cache.h map/tile_cache.cpp
   map/map_widget.h map/map_widget.cpp)
 target_include_directories(maplib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(maplib PUBLIC gutil gclib plotlib d2d1 dwrite windowscodecs ole32)
+
+# map3d: 3D track view (terrain mesh + HR ribbon, Direct3D 11)
+add_library(map3dlib STATIC
+  map3d/terrain.h map3d/terrain.cpp
+  map3d/image_decode.h map3d/image_decode.cpp
+  map3d/renderer.h map3d/renderer.cpp
+  map3d/view3d.h map3d/view3d.cpp)
+target_include_directories(map3dlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(map3dlib PUBLIC maplib gutil d3d11 dxgi d3dcompiler)

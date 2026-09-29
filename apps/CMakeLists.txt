@@ -14,5 +14,5 @@ add_executable(gview WIN32 gview/main.cpp gview/queries.h gview/queries.cpp
   gview/layer_menu.h gview/layer_menu.cpp
   gview/keys_dialog.h gview/keys_dialog.cpp gview/keys_dialog_ids.h gview/keys_dialog.rc
   ${APP_RC})
-target_link_libraries(gview PRIVATE plotlib maplib analysislib gstore fitlib gutil)
+target_link_libraries(gview PRIVATE plotlib maplib map3dlib analysislib gstore fitlib gutil)
 target_include_directories(gview PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

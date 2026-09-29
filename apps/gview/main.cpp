@@ -19,6 +19,7 @@
 #include "map/map_settings.h"
 #include "map/map_widget.h"
 #include "map/tile_cache.h"
+#include "map3d/view3d.h"
 #include "plot/calendar_widget.h"
 #include "plot/plot_widget.h"
 #include "queries.h"
@@ -49,6 +50,8 @@ constexpr int kIdmViewMap = 106;
 constexpr int kIdmViewSki = 107;
 constexpr int kIdmViewCompare = 108;
 constexpr int kIdmViewSleep = 109;
+constexpr int kIdmViewMap3D = 110;
+constexpr int kIdmViewLast = kIdmViewMap3D;  // View ids are kIdmViewDay + Mode, contiguous
 constexpr UINT kMsgTileReady = WM_APP + 1;
 constexpr int kIdmFit = 201;
 constexpr int kIdmZoomIn = 202;
@@ -62,7 +65,7 @@ constexpr float kKeyPanFrac = 0.1f;
 constexpr float kMapShare = 0.42f;      // Activity view: map's share of the plot width
 constexpr int kMapMinWidthCss = 320;
 
-enum class Mode { kDay, kTrends, kActivity, kHockey, kCalendar, kMap, kSki, kCompare, kSleep };
+enum class Mode { kDay, kTrends, kActivity, kHockey, kCalendar, kMap, kSki, kCompare, kSleep, kMap3D };
 
 struct App {
   HWND hwnd = nullptr;
@@ -75,6 +78,8 @@ struct App {
   plot::CalendarWidget calendar;
   map::MapWidget mapw;
   map::TileCache tiles;
+  map3d::View3D view3d;  // child window; shown only in the 3D map mode
+  bool view3d_ok = false;
   map::MapSettings map_settings;  // from gview.ini beside the exe (keys + chosen layers)
   std::filesystem::path ini_path;
   ComPtr<IWICImagingFactory> wic;
@@ -176,6 +181,7 @@ void layout(App& a) {
   const int list_w = static_cast<int>(kListWidthCss * a.scale);
   MoveWindow(a.list, 0, 0, list_w, rc.bottom - rc.top, TRUE);
   apply_rects(a);
+  if (a.view3d_ok) a.view3d.set_rect(plot_rect(a));
   if (a.rt) {
     a.rt->Resize(D2D1::SizeU(static_cast<UINT32>(rc.right - rc.left),
                              static_cast<UINT32>(rc.bottom - rc.top)));
@@ -215,6 +221,7 @@ void fill_list(App& a) {
       for (const auto& m : a.months) add(m.label);
       break;
     case Mode::kMap:
+    case Mode::kMap3D:
       for (const auto& e : a.gps_activities) add(e.label);
       break;
     case Mode::kSki:
@@ -259,7 +266,7 @@ bool figure_for_selection(App& a, const std::vector<int>& picked, plot::Figure& 
                           std::string& title) {
   const int sel = picked.empty() ? -1 : picked.front();
   const size_t idx = static_cast<size_t>(sel);
-  if (sel < 0) return a.mode != Mode::kCalendar && a.mode != Mode::kMap;
+  if (sel < 0) return a.mode != Mode::kCalendar && a.mode != Mode::kMap && a.mode != Mode::kMap3D;
   switch (a.mode) {
     case Mode::kDay:
       if (idx < a.days.size()) fig = gview::load_day(a.db, a.days[idx].date);
@@ -315,6 +322,18 @@ bool figure_for_selection(App& a, const std::vector<int>& picked, plot::Figure& 
         a.mapw.set_track(std::move(t));
       }
       return false;
+    case Mode::kMap3D:
+      if (idx < a.gps_activities.size()) {
+        map::Track t = gview::load_track(a.db, a.gps_activities[idx]);
+        if (a.view3d_ok) {
+          title = "3D  " + t.title;
+          a.view3d.set_track(std::move(t));
+        } else {
+          title = "3D unavailable (no Direct3D 11), showing 2D  -  " + t.title;
+          a.mapw.set_track(std::move(t));
+        }
+      }
+      return false;
   }
   return true;
 }
@@ -359,7 +378,8 @@ void set_mode(App& a, Mode m) {
   a.mode = m;
   HMENU menu = GetMenu(a.hwnd);
   const int id = kIdmViewDay + static_cast<int>(m);
-  CheckMenuRadioItem(menu, kIdmViewDay, kIdmViewSleep, id, MF_BYCOMMAND);
+  CheckMenuRadioItem(menu, kIdmViewDay, kIdmViewLast, id, MF_BYCOMMAND);
+  if (a.view3d_ok) a.view3d.show(m == Mode::kMap3D);
   fill_list(a);
   select_only(a, 0);
   show_selection(a);
@@ -378,6 +398,9 @@ void paint(App& a) {
     a.calendar.render(a.rt.Get());
   } else if (a.mode == Mode::kMap) {
     a.mapw.render(a.rt.Get());
+  } else if (a.mode == Mode::kMap3D) {
+    // The 3D child window covers the plot area; without it, say why.
+    if (!a.view3d_ok) a.mapw.render(a.rt.Get());
   } else {
     a.widget.render(a.rt.Get());
     if (split_view(a)) a.mapw.render(a.rt.Get());
@@ -415,6 +438,7 @@ HMENU build_menu(const App& a) {
   AppendMenuW(view, MF_STRING, kIdmViewSki, L"&Ski\t7");
   AppendMenuW(view, MF_STRING, kIdmViewCompare, L"C&ompare\t8");
   AppendMenuW(view, MF_STRING, kIdmViewSleep, L"S&leep\t9");
+  AppendMenuW(view, MF_STRING, kIdmViewMap3D, L"3&D map\t0");
   AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(view, MF_STRING, kIdmFit, L"&Fit to data\tHome");
   AppendMenuW(view, MF_STRING, kIdmZoomIn, L"Zoom &in\t+");
@@ -429,7 +453,7 @@ HMENU build_menu(const App& a) {
   AppendMenuW(data, MF_STRING, kIdmExit, L"E&xit");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(view), L"&View");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(data), L"&Data");
-  CheckMenuRadioItem(bar, kIdmViewDay, kIdmViewSleep, kIdmViewDay, MF_BYCOMMAND);
+  CheckMenuRadioItem(bar, kIdmViewDay, kIdmViewLast, kIdmViewDay, MF_BYCOMMAND);
   return bar;
 }
 
@@ -490,6 +514,7 @@ void apply_scale(App& a) {
   a.widget.set_dpi_scale(a.scale);
   a.calendar.set_dpi_scale(a.scale);
   a.mapw.set_dpi_scale(a.scale);
+  if (a.view3d_ok) a.view3d.set_dpi_scale(a.scale);
   apply_list_font(a);
 }
 
@@ -511,6 +536,12 @@ void on_create(App& a, HWND hwnd) {
     MessageBoxW(hwnd, L"Could not create the map tile cache directory; the Map view will be empty.",
                 L"Garmin viewer", MB_ICONWARNING);
   }
+  // No Direct3D 11 (very old GPU, some remote sessions): the 3D mode falls back to the 2D map.
+  a.view3d_ok = a.view3d.create(hwnd, a.d2d.Get(), a.dwrite.Get(), a.wic.Get(), &a.tiles);
+  if (a.view3d_ok) {
+    a.view3d.set_dpi_scale(a.scale);
+    a.view3d.set_base_layer(a.map_settings.base);
+  }
   layout(a);
   reload(a);
 }
@@ -529,6 +560,7 @@ void on_dpi_changed(App& a, HWND hwnd, WPARAM wp, LPARAM lp) {
 void apply_layers(App& a) {
   G_ASSERT(a.hwnd != nullptr);
   a.mapw.set_layers(a.map_settings.base, a.map_settings.overlays);
+  if (a.view3d_ok) a.view3d.set_base_layer(a.map_settings.base);
   gview::check_layer_menu(GetMenu(a.hwnd), a.map_settings);
   if (!map::save_map_layers(a.ini_path, a.map_settings)) {
     // Not fatal (e.g. the exe folder is read-only): the choice lasts this session.
@@ -551,13 +583,13 @@ void on_map_keys(App& a) {
   G_ASSERT(set);
   if (old != nullptr) DestroyMenu(old);
   const int id = kIdmViewDay + static_cast<int>(a.mode);
-  CheckMenuRadioItem(fresh, kIdmViewDay, kIdmViewSleep, id, MF_BYCOMMAND);
+  CheckMenuRadioItem(fresh, kIdmViewDay, kIdmViewLast, id, MF_BYCOMMAND);
   apply_layers(a);
 }
 
 // Returns the mode for a View menu id / digit key, or false if it is not one.
 bool mode_for_id(int id, Mode& out) {
-  if (id < kIdmViewDay || id > kIdmViewSleep) return false;
+  if (id < kIdmViewDay || id > kIdmViewLast) return false;
   out = static_cast<Mode>(id - kIdmViewDay);
   return true;
 }
@@ -604,13 +636,24 @@ void on_command(App& a, HWND hwnd, WPARAM wp) {
   InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+// The full-size 2D map is showing: the Map view, or the 3D view's fallback.
+bool map2d_mode(const App& a) {
+  return a.mode == Mode::kMap || (a.mode == Mode::kMap3D && !a.view3d_ok);
+}
+
+bool view3d_mode(const App& a) { return a.mode == Mode::kMap3D && a.view3d_ok; }
+
 // Returns true when handled.
 bool on_mouse_wheel(App& a, HWND hwnd, WPARAM wp, LPARAM lp) {
   POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
   ScreenToClient(hwnd, &pt);
   if (!in_plot(a, pt.x, pt.y) || a.mode == Mode::kCalendar) return false;
   const int notches = GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
-  if (a.mode == Mode::kMap || (split_view(a) && in_rect(map_rect(a), pt.x, pt.y))) {
+  if (view3d_mode(a)) {
+    a.view3d.zoom(notches);  // the child has no focus, so its wheel arrives here
+    return true;
+  }
+  if (map2d_mode(a) || (split_view(a) && in_rect(map_rect(a), pt.x, pt.y))) {
     a.mapw.zoom_step(static_cast<float>(pt.x), static_cast<float>(pt.y), notches > 0 ? 1 : -1);
   } else {
     double factor = 1.0;
@@ -629,7 +672,7 @@ bool on_button_down(App& a, HWND hwnd, LPARAM lp) {
   const int y = GET_Y_LPARAM(lp);
   if (!in_plot(a, x, y) || a.mode == Mode::kCalendar) return false;
   a.dragging = true;
-  a.drag_map = a.mode == Mode::kMap || (split_view(a) && in_rect(map_rect(a), x, y));
+  a.drag_map = map2d_mode(a) || (split_view(a) && in_rect(map_rect(a), x, y));
   a.drag_last_x = x;
   a.drag_last_y = y;
   SetCapture(hwnd);
@@ -665,13 +708,22 @@ bool on_key_down(App& a, WPARAM key) {
     set_mode(a, static_cast<Mode>(key - '1'));
     return true;
   }
+  if (key == '0') {
+    set_mode(a, Mode::kMap3D);
+    return true;
+  }
+  if (view3d_mode(a) && (key == VK_HOME || key == 'E')) {
+    if (key == VK_HOME) a.view3d.reset_camera();
+    if (key == 'E') a.view3d.cycle_exaggeration();
+    return true;
+  }
   const RECT r = chart_rect(a);
   const float w = static_cast<float>(r.right - r.left);
   const float mid = static_cast<float>(r.left + r.right) / 2.0f;
   switch (key) {
     case VK_HOME:
-      if (a.mode == Mode::kMap || split_view(a)) a.mapw.fit();
-      if (a.mode != Mode::kMap) a.widget.fit_x();
+      if (map2d_mode(a) || split_view(a)) a.mapw.fit();
+      if (!map2d_mode(a)) a.widget.fit_x();
       return true;
     case VK_LEFT: a.widget.pan_pixels(w * kKeyPanFrac); return true;
     case VK_RIGHT: a.widget.pan_pixels(-w * kKeyPanFrac); return true;
@@ -729,7 +781,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       }
       break;
     case kMsgTileReady:
-      if (a->mode == Mode::kMap || split_view(*a)) InvalidateRect(hwnd, nullptr, FALSE);
+      if (view3d_mode(*a)) a->view3d.on_tiles_ready();
+      if (map2d_mode(*a) || split_view(*a)) InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     case WM_DESTROY:
       a->tiles.stop();

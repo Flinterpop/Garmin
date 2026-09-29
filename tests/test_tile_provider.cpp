@@ -23,6 +23,7 @@ TEST_CASE("provider table is well formed", "[map]") {
     CHECK(p.max_zoom >= 10);
     CHECK(p.url.rfind("https://", 0) == 0);
     CHECK((p.url.find("{key}") != std::string::npos) == !p.key_name.empty());
+    if (p.hidden) continue;  // terrain data, not a layer: never in the menu
     if (p.overlay) overlays_started = true;
     CHECK((p.overlay || !overlays_started));  // overlays last: the menu radio range relies on it
   }

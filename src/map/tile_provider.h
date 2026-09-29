@@ -19,6 +19,7 @@ struct TileProvider {
   std::string attribution;
   std::string key_name;     // gview.ini [keys] entry; empty = no key needed
   bool overlay = false;     // transparent layer drawn over the base map
+  bool hidden = false;      // data, not a map (terrain heights): never offered as a layer
   bool disk_cache = true;   // false where the terms forbid storing tiles
   SessionKind session = SessionKind::kNone;
   std::string map_type;     // Google createSession mapType
@@ -32,6 +33,10 @@ const std::vector<TileProvider>& tile_providers();
 
 // Index of the provider with `id`, or SIZE_MAX.
 size_t provider_index(const std::string& id);
+
+// Terrain heights for the 3D view: AWS Terrain Tiles in Terrarium encoding.
+constexpr char kTerrainProviderId[] = "terrain_terrarium";
+constexpr int kTerrainMaxZoom = 15;
 
 // Fills the URL template. {s} rotates over the subdomains by tile.
 std::string tile_url(const TileProvider& p, int z, int x, int y, const std::string& key,

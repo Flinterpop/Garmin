@@ -374,14 +374,50 @@ void reload(App& a) {
   show_selection(a);
 }
 
+// The activity list a mode shows, or null for modes that list something else.
+const std::vector<gview::ActivityEntry>* activity_list(const App& a, Mode m) {
+  switch (m) {
+    case Mode::kActivity:
+    case Mode::kCompare: return &a.activities;
+    case Mode::kMap:
+    case Mode::kMap3D: return &a.gps_activities;
+    default: return nullptr;
+  }
+}
+
+// Start time of the selected activity, or 0. Start time, not fit_file_id:
+// the watch copy and the Connect download of one session share it.
+int64_t selected_activity_start(const App& a) {
+  const std::vector<gview::ActivityEntry>* list = activity_list(a, a.mode);
+  const std::vector<int> picked = selected_indices(a);
+  if (list == nullptr || picked.empty()) return 0;
+  const size_t i = static_cast<size_t>(picked.front());
+  return i < list->size() ? (*list)[i].start_ts : 0;
+}
+
+// Row of the activity starting at `start_ts` in the mode's list, or 0.
+int row_of_activity(const App& a, Mode m, int64_t start_ts) {
+  const std::vector<gview::ActivityEntry>* list = activity_list(a, m);
+  if (list == nullptr || start_ts == 0) return 0;
+  for (size_t i = 0; i < list->size() && i < gview::kMaxListEntries; ++i) {
+    if ((*list)[i].start_ts == start_ts) return static_cast<int>(i);
+  }
+  return 0;
+}
+
+// Switching between views that list activities keeps the same activity
+// selected (Map <-> 3D, Activity <-> Map, ...); other views start at the top.
 void set_mode(App& a, Mode m) {
+  const int64_t keep = selected_activity_start(a);
   a.mode = m;
   HMENU menu = GetMenu(a.hwnd);
   const int id = kIdmViewDay + static_cast<int>(m);
   CheckMenuRadioItem(menu, kIdmViewDay, kIdmViewLast, id, MF_BYCOMMAND);
   if (a.view3d_ok) a.view3d.show(m == Mode::kMap3D);
   fill_list(a);
-  select_only(a, 0);
+  const int row = row_of_activity(a, m, keep);
+  G_ASSERT(row >= 0);
+  select_only(a, row);
   show_selection(a);
 }
 

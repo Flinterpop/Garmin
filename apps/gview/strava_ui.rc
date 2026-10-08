@@ -1,0 +1,43 @@
+// gview's Strava connect and settings dialogs. Keep every string under 250
+// characters: rc.exe truncates at 256 with only a warning /WX does not see.
+#include <windows.h>
+#include "strava_ui_ids.h"
+
+IDD_STRAVA_CONNECT DIALOGEX 0, 0, 300, 170
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Connect to Strava"
+FONT 9, "Segoe UI"
+BEGIN
+  LTEXT "", IDC_SC_WHO, 7, 7, 286, 10
+  LTEXT "1. On Strava's API page, create an application. Any name and website will do; set Authorization Callback Domain to  localhost", -1, 7, 22, 286, 18
+  PUSHBUTTON "&Open Strava's API page", IDC_SC_OPEN_API, 7, 43, 110, 14
+  LTEXT "2. Copy the application's Client ID and Client Secret here.", -1, 7, 66, 286, 10
+  LTEXT "Client &ID", -1, 7, 82, 60, 10
+  EDITTEXT IDC_SC_CLIENT_ID, 70, 80, 223, 13, ES_AUTOHSCROLL | ES_NUMBER
+  LTEXT "Client &Secret", -1, 7, 100, 60, 10
+  EDITTEXT IDC_SC_SECRET, 70, 98, 223, 13, ES_AUTOHSCROLL | ES_PASSWORD
+  LTEXT "3. Click Connect: your browser opens Strava; click Authorize there. Both are kept only on this PC, encrypted.", -1, 7, 118, 286, 18
+  DEFPUSHBUTTON "Connect", IDOK, 186, 148, 50, 14
+  PUSHBUTTON "Cancel", IDCANCEL, 243, 148, 50, 14
+END
+
+IDD_STRAVA_SETTINGS DIALOGEX 0, 0, 330, 214
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Strava settings"
+FONT 9, "Segoe UI"
+BEGIN
+  LTEXT "Send activities that started on or after (YYYY-MM-DD)", -1, 7, 9, 200, 10
+  EDITTEXT IDC_SV_SINCE, 213, 7, 60, 13, ES_AUTOHSCROLL
+  LTEXT "Sports in your data", -1, 7, 28, 130, 10
+  LISTBOX IDC_SV_SPORTS, 7, 40, 130, 140, LBS_NOTIFY | WS_VSCROLL | WS_BORDER | WS_TABSTOP
+  AUTOCHECKBOX "S&end this sport to Strava", IDC_SV_ENABLED, 147, 40, 176, 10
+  LTEXT "Strava sport &type", -1, 147, 58, 176, 10
+  COMBOBOX IDC_SV_TYPE, 147, 69, 176, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+  LTEXT "T&itle on Strava (empty keeps Strava's own)", -1, 147, 89, 176, 10
+  EDITTEXT IDC_SV_TITLE, 147, 100, 176, 13, ES_AUTOHSCROLL
+  LTEXT "Skip if shorter than (&minutes)", -1, 147, 121, 110, 10
+  EDITTEXT IDC_SV_MINUTES, 263, 119, 40, 13, ES_NUMBER
+  LTEXT "An activity already on Strava (from Garmin's own Strava link, say) only gets its type and title set. Each one is handled once; later edits on Strava stay.", -1, 147, 140, 176, 36
+  DEFPUSHBUTTON "Save", IDOK, 216, 192, 50, 14
+  PUSHBUTTON "Cancel", IDCANCEL, 273, 192, 50, 14
+END

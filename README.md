@@ -2,11 +2,11 @@
 
 [![Release][release-badge]][release-latest] [![License: MIT][license-badge]](LICENSE)
 
-[release-badge]: https://img.shields.io/badge/release-v0.1.5-blue
+[release-badge]: https://img.shields.io/badge/release-v0.2.0-blue
 [release-latest]: https://github.com/Flinterpop/Garmin/releases/latest
 [license-badge]: https://img.shields.io/badge/license-MIT-green
 
-*Last updated: 29 Sep 2026*
+*Last updated: 8 Oct 2026*
 
 <img src="docs/icon-256.png" alt="app icon" width="96" align="right" />
 
@@ -59,6 +59,7 @@ Notes:
 | **Download new data every morning** | A Windows scheduled task that syncs at 06:00, or as soon as the PC is on and online after that |
 | **Log in to Garmin Connect…** | A fresh login, e.g. after Garmin stops accepting the saved one; fills the gap afterwards |
 | **Profile** | Switch between people; **Add a person…**, **Log out…**, **Remove *name*…** |
+| **Strava** | **Connect to Strava…**, **Settings…** (which sports go to Strava, as what and under which title), **Send to Strava now**, **Disconnect from Strava…**; see [Strava](#strava) |
 | **Import from watch…** | Copies and imports the files of a watch plugged in by USB |
 | **Import files…** | FIT files or Omron blood-pressure CSV exports from anywhere on the PC |
 | **Copy data from the previous version…** | Brings in a v0.1.3-or-earlier install from AppData |
@@ -71,6 +72,21 @@ Notes:
 - **Import from watch** works with watches that connect like a phone (MTP, e.g. the fenix 7, no drive letter) as well as older ones that appear as a drive: unlock the watch if it asks. It copies `Activity`, `Monitor`, `SUMMARY`, `Sleep`, `Metrics` and `HRVStatus` from the watch's `GARMIN` folder into `data\fit\watch\<watch name>\` and imports every FIT file; files already imported are skipped. Syncing already fetches the same data from Garmin Connect, so this is for what Connect does not have.
 - **Blood pressure**: CSVs named `readings_*.csv` in your Downloads folder (the export of [OmronBP](https://github.com/Flinterpop/OmronBP)) are imported on every sync; use **Import files…** for any saved elsewhere.
 - **Copy data from the previous version** copies the login, database and map tiles; it never overwrites anything and never deletes the AppData original.
+
+## Strava
+
+gview can put chosen sports on Strava with the type and title you want, for example every hockey game as **Ice Skate** titled "Old guy hockey" (Strava has no hockey type). It works alongside Garmin's own Strava link or without it.
+
+1. **Data → Strava → Connect to Strava…** Each person uses their own free Strava API application: **Open Strava's API page**, create an application (any name and website; **Authorization Callback Domain** `localhost`), and copy its **Client ID** and **Client Secret** into the dialog. **Connect** opens the browser at Strava; click **Authorize** with both boxes ticked.
+2. **Data → Strava → Settings…** lists the sports in your data. For each one, tick **Send this sport to Strava** and pick the Strava sport type, the title (empty keeps Strava's own) and the shortest activity worth sending (10 minutes by default, which leaves out accidental starts). **Send activities that started on or after** limits how far back it goes.
+3. From then on every sync (**Sync now** and the morning download) finishes by sending what is new. **Send to Strava now** does it on demand.
+
+Notes:
+
+- **Already on Strava** (Garmin's own link got there first, or you uploaded it): gview only sets the sport type and title. Otherwise it uploads the original FIT file and then sets them. Activities are matched by start time, within 2 minutes.
+- **Each activity is handled once.** Once it is on Strava as chosen it is never touched again, so a title you edit on Strava afterwards stays. A file Strava rejects is retried on the next two syncs, then left alone.
+- **Rate limits.** Strava caps how many requests an application makes per 15 minutes and per day. A large first send waits for the next window twice, then leaves the rest for the next sync; the progress log says how many are left.
+- **Disconnect** asks Strava to revoke gview's access and forgets the login on this PC; your settings stay for next time.
 
 ## Map layers
 
@@ -111,7 +127,9 @@ Everything lives **in the folder that holds the programs**; nothing goes to AppD
 <folder>\gview.ini                       map layers, API keys, last person chosen (keep private)
 <folder>\tokens.bin                      main profile: Garmin login (encrypted to this PC)
 <folder>\data\                           main profile: database and downloaded files
-<folder>\profiles\<name>\tokens.bin      another person's login
+<folder>\strava.bin                      main profile: Strava login and API application (encrypted to this PC)
+<folder>\strava.ini                      main profile: which sports go to Strava, as what
+<folder>\profiles\<name>\tokens.bin      another person's login (and their strava.bin, strava.ini)
 <folder>\profiles\<name>\data\           and their database
 <folder>\tiles\                          map tile cache, shared by everyone
 <folder>\sync.log                        what the morning download did
@@ -120,7 +138,7 @@ Everything lives **in the folder that holds the programs**; nothing goes to AppD
 Notes:
 
 - **The login** in `tokens.bin` is encrypted with Windows DPAPI to this PC: any Windows user here can use the folder, a copy on another PC cannot and needs a fresh login. Your password is never stored; it goes only to Garmin.
-- **Network traffic** goes to Garmin Connect and to the tile servers of the chosen map layer; the 3D map also fetches elevation from AWS Terrain Tiles (`s3.amazonaws.com/elevation-tiles-prod`, public, no key). Every tile server gets an identifying User-Agent, at most two connections and only the tiles on screen, as the OpenStreetMap tile policy asks; tiles are cached in `tiles\` except where the provider's terms forbid it (Google, Azure Maps).
+- **Network traffic** goes to Garmin Connect, to Strava for a person who has connected it (nothing otherwise), and to the tile servers of the chosen map layer; the 3D map also fetches elevation from AWS Terrain Tiles (`s3.amazonaws.com/elevation-tiles-prod`, public, no key). Every tile server gets an identifying User-Agent, at most two connections and only the tiles on screen, as the OpenStreetMap tile policy asks; tiles are cached in `tiles\` except where the provider's terms forbid it (Google, Azure Maps).
 
 ## Command line
 
@@ -224,11 +242,12 @@ src/fit      fit_types.h (protocol constants), fit_crc, fit_profile (message/fie
 src/gc       http_client (WinHTTP), oauth1 (RFC 5849 signing), token_store (DPAPI), gc_client (SSO login + endpoints)
 src/store    db (SQLite wrapper + schema), importer (JSON and FIT -> rows)
 src/sync     engine (the sync, cancellable, progress via callback), account (login, migration, catch-up range), files (FIT/CSV import), watch (MTP copy through the Shell)
+src/strava   rules (strava.ini), auth (OAuth, strava.bin), loopback (the browser redirect), api (list, upload, update), push (after every sync)
 src/plot     plot_types (Figure/Panel/Series model), ticks, decimate, plot_widget (Direct2D, zoom/pan/hover), calendar_widget
 src/map      mercator, tile_provider (the layer table), map_settings (gview.ini), tile_cache (2 download workers), hr_color, map_widget
 src/map3d    terrain (pure geometry), renderer (Direct3D 11), view3d (child window, tiles, camera), image_decode (WIC)
 src/analysis hockey (shifts, zones, per-game stats), ski (runs and lifts, per-run and per-day stats)
-apps/gview   main (window, views, menus), queries*.cpp (a Figure per view), sync_ui (login, MFA, progress, welcome, add-person dialogs), schedule (morning task), layer_menu, keys_dialog
+apps/gview   main (window, views, menus), queries*.cpp (a Figure per view), sync_ui (login, MFA, progress, welcome, add-person dialogs), strava_ui (Strava connect and settings), schedule (morning task), layer_menu, keys_dialog
 apps/gsync   command line over src/sync
 apps/fitdump FIT inspector
 tests        Catch2, one file per module: FIT CRC and decoder, OAuth1 vectors, Connect client, zip, time, ticks, decimation, hockey, ski, Mercator, map tracks, tile providers, 3D terrain, profiles, sync, imports, blood pressure, JSON importers

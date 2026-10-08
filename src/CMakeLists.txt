@@ -62,6 +62,16 @@ add_library(maplib STATIC
 target_include_directories(maplib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(maplib PUBLIC gutil gclib plotlib d2d1 dwrite windowscodecs ole32)
 
+# strava: Strava login, API and the after-sync push of chosen sports
+add_library(stravalib STATIC
+  strava/rules.h strava/rules.cpp
+  strava/auth.h strava/auth.cpp
+  strava/loopback.h strava/loopback.cpp
+  strava/api.h strava/api.cpp
+  strava/push.h strava/push.cpp)
+target_include_directories(stravalib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(stravalib PUBLIC gclib gstore fitlib gutil nlohmann_json::nlohmann_json ws2_32)
+
 # sync: the Garmin Connect sync, login and migration, shared by gsync and gview
 add_library(synclib STATIC
   sync/engine.h sync/engine.cpp
@@ -69,7 +79,7 @@ add_library(synclib STATIC
   sync/files.h sync/files.cpp
   sync/watch.h sync/watch.cpp)
 target_include_directories(synclib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(synclib PUBLIC gclib gstore gutil ole32 shell32)
+target_link_libraries(synclib PUBLIC stravalib gclib gstore gutil ole32 shell32)
 
 # map3d: 3D track view (terrain mesh + HR ribbon, Direct3D 11)
 add_library(map3dlib STATIC

@@ -15,6 +15,8 @@
 #include "gc/token_store.h"
 #include "store/db.h"
 #include "store/importer.h"
+#include "strava/auth.h"
+#include "strava/push.h"
 #include "util/assert.h"
 #include "util/file_util.h"
 #include "util/time_util.h"
@@ -365,6 +367,11 @@ SyncResult run_sync(const SyncOptions& o, const Report& report) {
   r.login_required = client.login_required();
   report(false, strf("done: %lld rows written, %d failures%s", static_cast<long long>(r.rows),
                      r.failures, r.cancelled ? " (stopped early)" : ""));
+  if (!r.cancelled && strava::connected(o.profile_base)) {
+    const strava::PushOptions po{o.profile_base, o.data_dir, o.cancel};
+    const strava::PushResult pr = strava::run_push(po, report);
+    r.strava_failures = pr.failures + (pr.login_required ? 1 : 0);
+  }
   return r;
 }
 

@@ -4,3 +4,6 @@ data/
 .vs/
 # gview.ini holds map API keys (Google, Azure Maps, Thunderforest): never commit or ship it
 *.ini
+# logins (Garmin tokens.bin, Strava strava.bin): encrypted to one PC, but never commit them
+tokens.bin
+strava.bin

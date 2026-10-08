@@ -82,6 +82,9 @@ constexpr const char* kSchema[] = {
     "CREATE TABLE IF NOT EXISTS sync_log("
     " kind TEXT NOT NULL, key TEXT NOT NULL, fetched_at INTEGER NOT NULL,"
     " ok INTEGER NOT NULL, PRIMARY KEY(kind, key)) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS strava_push("
+    " start_ts INTEGER PRIMARY KEY, state TEXT NOT NULL, strava_id INTEGER,"
+    " attempts INTEGER NOT NULL DEFAULT 0, note TEXT, at INTEGER NOT NULL)",
     "CREATE INDEX IF NOT EXISTS idx_activity_start ON activity(start_ts)",
     "CREATE INDEX IF NOT EXISTS idx_fit_file_type ON fit_file(file_type, time_created)",
 };

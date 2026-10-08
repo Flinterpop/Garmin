@@ -15,6 +15,7 @@ add_executable(gview WIN32 gview/main.cpp gview/queries.h gview/queries.cpp
   gview/keys_dialog.h gview/keys_dialog.cpp gview/keys_dialog_ids.h gview/keys_dialog.rc
   gview/sync_ui.h gview/sync_ui.cpp gview/sync_ui_ids.h gview/sync_ui.rc
   gview/schedule.h gview/schedule.cpp
+  gview/strava_ui.h gview/strava_ui.cpp gview/strava_ui_ids.h gview/strava_ui.rc
   ${APP_RC})
 target_link_libraries(gview PRIVATE synclib plotlib maplib map3dlib analysislib gstore fitlib gutil)
 target_include_directories(gview PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

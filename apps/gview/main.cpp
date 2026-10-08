@@ -30,6 +30,9 @@
 #include "queries.h"
 #include "resource.h"
 #include "store/db.h"
+#include "strava/auth.h"
+#include "strava/rules.h"
+#include "strava_ui.h"
 #include "util/assert.h"
 #include "util/file_util.h"
 
@@ -73,6 +76,10 @@ constexpr int kIdmImportWatch = 309;
 constexpr int kIdmImportFiles = 310;
 constexpr int kIdmLogout = 311;
 constexpr int kIdmRemovePerson = 312;
+constexpr int kIdmStravaConnect = 313;
+constexpr int kIdmStravaSettings = 314;
+constexpr int kIdmStravaSend = 315;
+constexpr int kIdmStravaDisconnect = 316;
 constexpr int kFirstSyncDays = 30;  // a new login downloads this much history
 constexpr int kIdmProfileFirst = 500;  // + index into App::profile_names
 constexpr double kWheelZoomPerNotch = 0.8;
@@ -618,6 +625,20 @@ HMENU build_profile_menu(const App& a) {
   return m;
 }
 
+// Data > Strava: connect, choose sports, send now, disconnect, for the current profile.
+HMENU build_strava_menu(const App& a) {
+  HMENU m = CreatePopupMenu();
+  G_REQUIRE_RET(m != nullptr, nullptr);
+  const bool on = strava::connected(profile_base_of(a.profile));
+  const UINT if_on = on ? MF_ENABLED : MF_GRAYED;
+  AppendMenuW(m, MF_STRING, kIdmStravaConnect, on ? L"Re&connect to Strava..." : L"&Connect to Strava...");
+  AppendMenuW(m, MF_STRING, kIdmStravaSettings, L"&Settings...");
+  AppendMenuW(m, MF_STRING | if_on, kIdmStravaSend, L"Send to Strava &now");
+  AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(m, MF_STRING | if_on, kIdmStravaDisconnect, L"&Disconnect from Strava...");
+  return m;
+}
+
 HMENU build_menu(const App& a) {
   HMENU bar = CreateMenu();
   HMENU view = CreatePopupMenu();
@@ -647,6 +668,7 @@ HMENU build_menu(const App& a) {
               kIdmNightly, L"&Download new data every morning");
   AppendMenuW(data, MF_STRING, kIdmLogin, L"&Log in to Garmin Connect...");
   AppendMenuW(data, MF_POPUP, reinterpret_cast<UINT_PTR>(build_profile_menu(a)), L"&Profile");
+  AppendMenuW(data, MF_POPUP, reinterpret_cast<UINT_PTR>(build_strava_menu(a)), L"S&trava");
   AppendMenuW(data, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(data, MF_STRING, kIdmImportWatch, L"Import from &watch...");
   AppendMenuW(data, MF_STRING, kIdmImportFiles, L"&Import files...");
@@ -988,6 +1010,24 @@ void on_migrate(App& a) {
   on_reload(a);
 }
 
+// Data > Strava > Connect: the browser login, then the sports to send if none are chosen yet.
+void on_strava_connect(App& a) {
+  const std::filesystem::path base = profile_base_of(a.profile);
+  const bool ok = gview::strava_connect(a.hwnd, base, who_label(a.profile));
+  rebuild_menu(a);
+  if (ok && !strava::any_enabled(strava::load_settings(strava::settings_path(base)))) {
+    gview::strava_settings(a.hwnd, base, data_dir_of(a, a.profile));
+  }
+}
+
+void on_strava_command(App& a, int id) {
+  const std::filesystem::path base = profile_base_of(a.profile);
+  if (id == kIdmStravaConnect) on_strava_connect(a);
+  if (id == kIdmStravaSettings) gview::strava_settings(a.hwnd, base, data_dir_of(a, a.profile));
+  if (id == kIdmStravaSend) gview::strava_send_now(a.hwnd, base, data_dir_of(a, a.profile));
+  if (id == kIdmStravaDisconnect && gview::strava_disconnect(a.hwnd, base)) rebuild_menu(a);
+}
+
 // Returns the mode for a View menu id / digit key, or false if it is not one.
 bool mode_for_id(int id, Mode& out) {
   if (id < kIdmViewDay || id > kIdmViewLast) return false;
@@ -1009,6 +1049,10 @@ bool on_data_command(App& a, int id) {
     case kIdmImportFiles: on_import_files(a); return true;
     case kIdmLogout: on_logout(a); return true;
     case kIdmRemovePerson: on_remove_person(a); return true;
+    case kIdmStravaConnect:
+    case kIdmStravaSettings:
+    case kIdmStravaSend:
+    case kIdmStravaDisconnect: on_strava_command(a, id); return true;
     default: return false;
   }
 }

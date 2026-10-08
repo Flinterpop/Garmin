@@ -1,10 +1,10 @@
 # Garmin
 
-*Last updated: 29 Sep 2026*
+*Last updated: 8 Oct 2026*
 
-Personal health-data tooling: C++20 / Win32, no UI framework. **This repository is not export-controlled** (it is the owner's own fitness data and open-source code under MIT), unlike the other repositories on this machine. Still keep work local; the only outbound traffic is to Garmin Connect and the map tile servers (OpenStreetMap by default; the providers in `src/map/tile_provider.cpp` when chosen in View → Map layer; AWS Terrain Tiles for the 3D map's heights).
+Personal health-data tooling: C++20 / Win32, no UI framework. **This repository is not export-controlled** (it is the owner's own fitness data and open-source code under MIT), unlike the other repositories on this machine. Still keep work local; the only outbound traffic is to Garmin Connect, the map tile servers (OpenStreetMap by default; the providers in `src/map/tile_provider.cpp` when chosen in View → Map layer; AWS Terrain Tiles for the 3D map's heights), and Strava for a profile whose owner connected it (`src/strava`, added at the owner's request on 8 Oct 2026; nothing goes to Strava for a profile without `strava.bin`).
 
-**Portable install: everything lives beside the exes, nothing in AppData, nothing tied to a Windows account** (the owner's explicit rule). Logins (`tokens.bin`, DPAPI machine scope), databases (`data\`), the tile cache (`tiles\`), `gview.ini` and other people's profiles (`profiles\<name>\`) all sit in the exe folder; multi-user means `--profile <name>`, never Windows accounts. `gutil::exe_dir()` is the only base path; `legacy_appdata_dir()` exists solely for the copy-from-previous-version migration.
+**Portable install: everything lives beside the exes, nothing in AppData, nothing tied to a Windows account** (the owner's explicit rule). Logins (`tokens.bin`, and `strava.bin` with the person's own Strava API client id/secret, both DPAPI machine scope), databases (`data\`), the tile cache (`tiles\`), `gview.ini` and other people's profiles (`profiles\<name>\`) all sit in the exe folder; multi-user means `--profile <name>`, never Windows accounts. `gutil::exe_dir()` is the only base path; `legacy_appdata_dir()` exists solely for the copy-from-previous-version migration.
 
 **Users never run `gsync.exe`** (the owner's rule). Every user-facing action (login incl. MFA, sync, adding a person, migration, the morning task) must be reachable from `gview`'s menus and dialogs; `gsync` is for the scheduled task and scripting. New sync/login logic goes in `src/sync` so both use it, never only in `apps/gsync`. Error text shown in `gview` must not tell the user to run a command.
 
@@ -24,9 +24,9 @@ ctest --preset debug                # Catch2, must stay at 100 %
 ## Layout
 
 - `src/util` assertions (`G_ASSERT`, `G_REQUIRE_RET`, `G_REQUIRE_VOID`), time, CNG/DPAPI, zip, files
-- `src/fit` FIT decoder written from the spec; `src/gc` WinHTTP + OAuth1 Garmin Connect client; `src/store` SQLite schema + importers; `src/sync` the sync engine (progress via a `Report` callback, cancellable), login, migration and catch-up range, file import (`files.*`) and watch import over MTP through the Shell (`watch.*`, `IFileOperation`), shared by gsync and gview
+- `src/fit` FIT decoder written from the spec; `src/gc` WinHTTP + OAuth1 Garmin Connect client; `src/store` SQLite schema + importers; `src/sync` the sync engine (progress via a `Report` callback, cancellable), login, migration and catch-up range, file import (`files.*`) and watch import over MTP through the Shell (`watch.*`, `IFileOperation`), shared by gsync and gview; `src/strava` the Strava side: per-sport rules (`strava.ini` in the profile folder), OAuth with a one-shot localhost:8765 listener for the browser redirect, the API client, and `run_push`, which `run_sync` calls after every sync (so the morning task sends too). What was sent is recorded in the `strava_push` table and never touched again; Strava failures are reported but kept out of gsync's exit code
 - `src/plot` Direct2D plot engine (`PlotWidget`) and `CalendarWidget`; `src/map` Web Mercator, tile providers + `gview.ini` settings, tile cache (2 workers, per-provider folders), `MapWidget`; `src/map3d` 3D map (pure geometry in `terrain.*`, Direct3D 11 `renderer.*`, child-window `view3d.*`); `src/analysis` hockey shifts, ski runs
-- `apps/gsync` CLI (thin wrapper over `src/sync`), `apps/gview` viewer (`queries*.cpp` build a `plot::Figure` per view; `sync_ui.*` login / MFA / progress / welcome / add-person dialogs, work on a worker thread; `schedule.*` the morning task via `schtasks /XML`), `apps/fitdump`
+- `apps/gsync` CLI (thin wrapper over `src/sync`), `apps/gview` viewer (`queries*.cpp` build a `plot::Figure` per view; `sync_ui.*` login / MFA / progress / welcome / add-person dialogs, work on a worker thread; `strava_ui.*` Data → Strava connect / settings / send / disconnect; `schedule.*` the morning task via `schtasks /XML`), `apps/fitdump`
 - `tests` one file per module; analysis modules are tested on synthetic traces
 
 ## Conventions

@@ -39,6 +39,7 @@ struct SyncResult {
   bool login_required = false;  // Garmin refused the saved login
   bool cancelled = false;
   bool db_error = false;
+  int strava_failures = 0;  // reported, but not part of the exit code: Garmin's sync succeeded
 };
 
 SyncResult run_sync(const SyncOptions& o, const Report& report);

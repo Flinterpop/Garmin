@@ -154,16 +154,63 @@ TEST_CASE("strava push: candidates follow the rules, skip done ones and prefer t
   add_session(db, 4, t0 + 2 * day, 1, 1800, 3);  // a run: rule present but off
   add_session(db, 5, t0 + 3 * day, 73, 4000, 3);
   add_session(db, 6, t0 - 30 * day, 73, 4000, 3);  // before `since`
-  exec(db, "INSERT INTO strava_push(start_ts, state, at) VALUES(" + std::to_string(t0 + 3 * day) + ", 'done', 0)");
+  exec(db, "INSERT INTO strava_push(start_ts, state, at, sport_type, name) VALUES(" + std::to_string(t0 + 3 * day) +
+               ", 'done', 0, 'IceSkate', 'Old guy hockey')");  // done exactly as the rule says
 
   std::vector<strava::Candidate> c = strava::select_candidates(db, hockey_only());
   REQUIRE(c.size() == 1);
   CHECK(c[0].start_ts == t0);
   CHECK(c[0].fit.filename() == "2.fit");
+  CHECK_FALSE(c[0].recheck);
 
   exec(db, "INSERT INTO strava_push(start_ts, state, attempts, at) VALUES(" + std::to_string(t0) + ", 'failed', " +
                std::to_string(strava::kMaxAttempts) + ", 0)");
   CHECK(strava::select_candidates(db, hockey_only()).empty());  // given up on after kMaxAttempts
+}
+
+TEST_CASE("strava push: changing a rule's title re-applies it to activities already sent", "[strava]") {
+  store::Db db;
+  std::string err;
+  REQUIRE(db.open(":memory:", err));
+  const int64_t t0 = 1704367069;
+  add_session(db, 1, t0, 73, 4500, 3);
+  add_session(db, 2, t0 + 86400, 73, 4500, 3);
+  exec(db, "INSERT INTO strava_push(start_ts, state, at, sport_type, name) VALUES(" + std::to_string(t0) +
+               ", 'done', 0, 'IceSkate', 'Olf guy hockey')");  // sent under a mistyped title
+  exec(db, "INSERT INTO strava_push(start_ts, state, at) VALUES(" + std::to_string(t0 + 86400) +
+               ", 'done', 0)");  // sent by v0.2.0, which did not record what it applied
+  const std::vector<strava::Candidate> c = strava::select_candidates(db, hockey_only());
+  REQUIRE(c.size() == 2);
+  CHECK(c[0].recheck);
+  CHECK(c[1].recheck);
+}
+
+TEST_CASE("db: a database from before a column was added gains it on open", "[strava][store]") {
+  const std::filesystem::path p = std::filesystem::temp_directory_path() / "gview_test_migrate.db";
+  std::error_code ec;
+  std::filesystem::remove(p, ec);
+  std::string err;
+  {
+    store::Db db;
+    REQUIRE(db.open(p, err));
+    exec(db, "DROP TABLE strava_push");
+    exec(db, "CREATE TABLE strava_push(start_ts INTEGER PRIMARY KEY, state TEXT NOT NULL, strava_id INTEGER,"
+             " attempts INTEGER NOT NULL DEFAULT 0, note TEXT, at INTEGER NOT NULL)");  // the v0.2.0 table
+    exec(db, "INSERT INTO strava_push(start_ts, state, at) VALUES(1, 'done', 0)");
+  }
+  {
+    store::Db db;
+    REQUIRE(db.open(p, err));
+    exec(db, "UPDATE strava_push SET sport_type = 'IceSkate', name = 'x' WHERE start_ts = 1");
+    store::Stmt q(db, "SELECT COUNT(*) FROM strava_push WHERE name = 'x'");
+    REQUIRE(q.row());
+    CHECK(q.col_int(0) == 1);  // the old row survived and has the new columns
+  }
+  {
+    store::Db db;
+    REQUIRE(db.open(p, err));  // and opening again is a no-op, not a duplicate-column error
+  }
+  std::filesystem::remove(p, ec);
 }
 
 TEST_CASE("strava push: without a login nothing happens", "[strava]") {

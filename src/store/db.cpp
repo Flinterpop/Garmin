@@ -84,9 +84,22 @@ constexpr const char* kSchema[] = {
     " ok INTEGER NOT NULL, PRIMARY KEY(kind, key)) WITHOUT ROWID",
     "CREATE TABLE IF NOT EXISTS strava_push("
     " start_ts INTEGER PRIMARY KEY, state TEXT NOT NULL, strava_id INTEGER,"
-    " attempts INTEGER NOT NULL DEFAULT 0, note TEXT, at INTEGER NOT NULL)",
+    " attempts INTEGER NOT NULL DEFAULT 0, note TEXT, at INTEGER NOT NULL,"
+    " sport_type TEXT, name TEXT)",
     "CREATE INDEX IF NOT EXISTS idx_activity_start ON activity(start_ts)",
     "CREATE INDEX IF NOT EXISTS idx_fit_file_type ON fit_file(file_type, time_created)",
+};
+
+// Columns added to a table after it first shipped; databases made before get them on open.
+struct AddedColumn {
+  const char* table;
+  const char* column;
+  const char* type;
+};
+
+constexpr AddedColumn kAddedColumns[] = {
+    {"strava_push", "sport_type", "TEXT"},  // v0.2.1: what was applied, to re-apply a changed rule
+    {"strava_push", "name", "TEXT"},
 };
 
 }  // namespace
@@ -109,6 +122,27 @@ bool Db::open(const std::filesystem::path& path, std::string& err) {
       close();
       return false;
     }
+  }
+  if (!add_missing_columns(err)) {
+    close();
+    return false;
+  }
+  return true;
+}
+
+bool Db::add_missing_columns(std::string& err) {
+  G_ASSERT(db_ != nullptr);
+  for (const AddedColumn& c : kAddedColumns) {
+    bool present = false;
+    {
+      Stmt q(*this, "SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2");
+      G_REQUIRE_RET(q.ok(), false);
+      q.bind(1, std::string(c.table)).bind(2, std::string(c.column));
+      present = q.row();
+    }
+    if (present) continue;
+    const std::string sql = std::string("ALTER TABLE ") + c.table + " ADD COLUMN " + c.column + " " + c.type;
+    if (!exec(sql.c_str(), err)) return false;
   }
   return true;
 }

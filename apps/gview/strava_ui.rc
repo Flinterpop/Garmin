@@ -37,7 +37,7 @@ BEGIN
   EDITTEXT IDC_SV_TITLE, 147, 100, 176, 13, ES_AUTOHSCROLL
   LTEXT "Skip if shorter than (&minutes)", -1, 147, 121, 110, 10
   EDITTEXT IDC_SV_MINUTES, 263, 119, 40, 13, ES_NUMBER
-  LTEXT "An activity already on Strava (from Garmin's own Strava link, say) only gets its type and title set. Each one is handled once; later edits on Strava stay.", -1, 147, 140, 176, 36
+  LTEXT "An activity already on Strava (from Garmin's own Strava link, say) only gets its type and title set. Your later edits on Strava stay, unless you change the type or title here.", -1, 147, 140, 176, 36
   DEFPUSHBUTTON "Save", IDOK, 216, 192, 50, 14
   PUSHBUTTON "Cancel", IDCANCEL, 273, 192, 50, 14
 END

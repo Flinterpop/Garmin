@@ -2,7 +2,9 @@
 // activity Strava already has (Garmin's own Strava link, or an earlier
 // upload) gets its sport type and title set; one it lacks is uploaded from
 // the FIT file and then set. Each one is recorded in the strava_push table
-// once done and never touched again, so later edits on Strava stay.
+// with the type and title applied, and left alone while the rule still says
+// the same, so later edits on Strava stay; changing the rule re-applies it
+// to the activities already sent (but never re-sends one deleted on Strava).
 // Runs after every sync (gsync's morning task and gview's Sync now) and from
 // gview's Data > Strava > Send now.
 #pragma once
@@ -48,10 +50,12 @@ struct Candidate {
   int64_t start_ts = 0;
   int sport = -1;
   std::filesystem::path fit;
+  bool recheck = false;  // sent before under a different type or title
 };
 
-// Activities the rules select that are not yet done, oldest first, one per
-// start time (the copy with records), at most kMaxPerRun.
+// Activities the rules select that are not yet done, or were done under a
+// type or title the rule has since changed; oldest first, one per start
+// time (the copy with records), at most kMaxPerRun.
 std::vector<Candidate> select_candidates(store::Db& db, const Settings& s);
 
 PushResult run_push(const PushOptions& o, const Report& report);

@@ -28,17 +28,20 @@ constexpr int kMaxRows = 100000;
 
 constexpr char kCandidateSql[] =
     "SELECT s.start_ts, s.sport, s.timer_s, f.path,"
-    " (SELECT COUNT(*) FROM activity_record r WHERE r.fit_file_id = s.fit_file_id) AS n"
+    " (SELECT COUNT(*) FROM activity_record r WHERE r.fit_file_id = s.fit_file_id) AS n,"
+    " p.state, IFNULL(p.sport_type, ''), IFNULL(p.name, '')"
     " FROM activity_session s JOIN fit_file f ON f.id = s.fit_file_id"
     " LEFT JOIN strava_push p ON p.start_ts = s.start_ts"
     " WHERE s.start_ts >= ?1 AND s.sport IS NOT NULL"
-    "   AND (p.state IS NULL OR (p.state = 'failed' AND p.attempts < ?2))"
+    "   AND (p.state IS NULL OR p.state = 'done' OR (p.state = 'failed' AND p.attempts < ?2))"
     " ORDER BY s.start_ts, n DESC";
 
 constexpr char kRecordSql[] =
-    "INSERT INTO strava_push(start_ts, state, strava_id, attempts, note, at) VALUES(?1, ?2, ?3, ?4, ?5, ?6)"
+    "INSERT INTO strava_push(start_ts, state, strava_id, attempts, note, at, sport_type, name)"
+    " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
     " ON CONFLICT(start_ts) DO UPDATE SET state = excluded.state, strava_id = excluded.strava_id,"
-    " attempts = strava_push.attempts + excluded.attempts, note = excluded.note, at = excluded.at";
+    " attempts = strava_push.attempts + excluded.attempts, note = excluded.note, at = excluded.at,"
+    " sport_type = excluded.sport_type, name = excluded.name";
 
 enum class Outcome { kDone, kLeft, kFailed, kStop };
 
@@ -101,7 +104,9 @@ Status with_retry(Ctx& cx, const F& fn) {
   return s;
 }
 
-void record(store::Db& db, int64_t start_ts, const char* state, int64_t strava_id, const std::string& note) {
+// Done records keep the type and title applied (`rule`), so a later change to the rule re-applies.
+void record(store::Db& db, int64_t start_ts, const char* state, int64_t strava_id, const std::string& note,
+            const SportRule* rule) {
   G_ASSERT(start_ts > 0 && state != nullptr);
   store::Stmt st(db, kRecordSql);
   G_REQUIRE_VOID(st.ok());
@@ -111,6 +116,11 @@ void record(store::Db& db, int64_t start_ts, const char* state, int64_t strava_i
     st.bind(3, strava_id);
   } else {
     st.bind_null(3);
+  }
+  if (rule != nullptr) {
+    st.bind(7, rule->sport_type).bind(8, rule->name);
+  } else {
+    st.bind_null(7).bind_null(8);
   }
   std::string err;
   const bool ok = st.run(err);
@@ -126,7 +136,7 @@ Outcome on_error(Ctx& cx, const Candidate& c, Status s, const std::string& err) 
   }
   if (s == Status::kRateLimited) return Outcome::kStop;
   cx.report(true, fmt("  %s  failed: %s", when(c.start_ts).c_str(), err.c_str()));
-  record(cx.db, c.start_ts, "failed", 0, err);
+  record(cx.db, c.start_ts, "failed", 0, err, nullptr);
   return Outcome::kFailed;
 }
 
@@ -149,7 +159,7 @@ Outcome fix_existing(Ctx& cx, const Candidate& c, const SportRule& rule, const A
   } else {
     ++cx.r.unchanged;
   }
-  record(cx.db, c.start_ts, "done", a.id, std::string());
+  record(cx.db, c.start_ts, "done", a.id, std::string(), &rule);
   return Outcome::kDone;
 }
 
@@ -184,7 +194,7 @@ Outcome upload_new(Ctx& cx, const Candidate& c, const SportRule& rule) {
   s = set_type(cx, u.activity_id, rule, err);
   if (s != Status::kOk) return on_error(cx, c, s, err);
   ++cx.r.uploaded;
-  record(cx.db, c.start_ts, "done", u.activity_id, std::string());
+  record(cx.db, c.start_ts, "done", u.activity_id, std::string(), &rule);
   cx.report(false, fmt("  %s  %-12s uploaded as %s '%s'", when(c.start_ts).c_str(),
                        fit::sport_name(static_cast<uint8_t>(c.sport)), rule.sport_type.c_str(), rule.name.c_str()));
   return Outcome::kDone;
@@ -194,7 +204,13 @@ Outcome push_one(Ctx& cx, const Candidate& c, const Settings& st, const std::vec
   const SportRule* rule = find_rule(st, c.sport);
   G_REQUIRE_RET(rule != nullptr && rule->enabled, Outcome::kDone);
   const Activity* m = find_match(acts, c.start_ts);
-  return m != nullptr ? fix_existing(cx, c, *rule, *m) : upload_new(cx, c, *rule);
+  if (m != nullptr) return fix_existing(cx, c, *rule, *m);
+  if (c.recheck) {  // sent before, gone from Strava since: deleted there on purpose, so not sent again
+    ++cx.r.unchanged;
+    record(cx.db, c.start_ts, "done", 0, "no longer on Strava", rule);
+    return Outcome::kDone;
+  }
+  return upload_new(cx, c, *rule);
 }
 
 // Login from strava.bin, renewed if due; false (with the reason reported) when unusable.
@@ -249,7 +265,9 @@ std::vector<Candidate> select_candidates(store::Db& db, const Settings& s) {
     const SportRule* rule = find_rule(s, static_cast<int>(st.col_int(1)));
     if (rule == nullptr || !rule->enabled) continue;
     if (st.col_null(2) || st.col_double(2) < rule->min_minutes * 60.0) continue;
-    out.push_back(Candidate{ts, rule->sport, std::filesystem::path(st.col_text(3))});  // stored with path::string()
+    const bool done = !st.col_null(5) && st.col_text(5) == "done";
+    if (done && st.col_text(6) == rule->sport_type && st.col_text(7) == rule->name) continue;  // as the rule says
+    out.push_back(Candidate{ts, rule->sport, std::filesystem::path(st.col_text(3)), done});  // path::string() form
   }
   G_ASSERT(out.size() <= static_cast<size_t>(kMaxPerRun));
   return out;

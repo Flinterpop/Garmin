@@ -35,6 +35,8 @@ class Db {
   sqlite3* raw() const { return db_; }
 
  private:
+  bool add_missing_columns(std::string& err);
+
   sqlite3* db_ = nullptr;
 };
 

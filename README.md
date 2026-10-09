@@ -2,7 +2,7 @@
 
 [![Release][release-badge]][release-latest] [![License: MIT][license-badge]](LICENSE)
 
-[release-badge]: https://img.shields.io/badge/release-v0.2.0-blue
+[release-badge]: https://img.shields.io/badge/release-v0.2.1-blue
 [release-latest]: https://github.com/Flinterpop/Garmin/releases/latest
 [license-badge]: https://img.shields.io/badge/license-MIT-green
 
@@ -84,7 +84,7 @@ gview can put chosen sports on Strava with the type and title you want, for exam
 Notes:
 
 - **Already on Strava** (Garmin's own link got there first, or you uploaded it): gview only sets the sport type and title. Otherwise it uploads the original FIT file and then sets them. Activities are matched by start time, within 2 minutes.
-- **Each activity is handled once.** Once it is on Strava as chosen it is never touched again, so a title you edit on Strava afterwards stays. A file Strava rejects is retried on the next two syncs, then left alone.
+- **Each activity is handled once per setting.** Once it is on Strava as chosen it is left alone, so a title you edit on Strava afterwards stays. Changing a sport's type or title in **Settings** applies the new one to the activities already sent at the next send (a typo is fixed by correcting it); one you deleted on Strava is not sent again. A file Strava rejects is retried on the next two syncs, then left alone.
 - **Rate limits.** Strava caps how many requests an application makes per 15 minutes and per day. A large first send waits for the next window twice, then leaves the rest for the next sync; the progress log says how many are left.
 - **Disconnect** asks Strava to revoke gview's access and forgets the login on this PC; your settings stay for next time.
 

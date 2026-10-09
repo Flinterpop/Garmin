@@ -112,6 +112,8 @@ INT_PTR CALLBACK connect_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
 
 // The browser half: listen, send the browser to Strava, trade the code for tokens.
 bool authorize(Connect& c, const syncer::Report& report, const std::atomic<bool>& cancel) {
+  G_ASSERT(report != nullptr && !c.base.empty());
+  G_ASSERT(strava::valid_client_id(c.login.client_id));  // checked by the dialog
   std::string err;
   strava::Listener lis;
   if (!lis.open(strava::kRedirectPort, err)) {

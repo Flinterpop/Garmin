@@ -227,6 +227,8 @@ void fetch_activity(SyncContext& cx, int64_t id, const std::filesystem::path& di
     }
     return;
   }
+  // Imported once and its file removed since: a session deleted in gview. Not fetched again.
+  if (!cx.opt.force && store::fit_file_known(cx.db, p.string())) return;
   std::vector<uint8_t> zip;
   std::string err;
   if (!cx.client.download_activity_zip(id, zip, err)) {

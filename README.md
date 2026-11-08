@@ -2,7 +2,7 @@
 
 [![Release][release-badge]][release-latest] [![License: MIT][license-badge]](LICENSE)
 
-[release-badge]: https://img.shields.io/badge/release-v0.2.1-blue
+[release-badge]: https://img.shields.io/badge/release-v0.3.0-blue
 [release-latest]: https://github.com/Flinterpop/Garmin/releases/latest
 [license-badge]: https://img.shields.io/badge/license-MIT-green
 
@@ -49,6 +49,7 @@ Notes:
 - **Activity**: with GPS, hovering the charts marks the moment on the map and hovering the track marks it on the charts.
 - **3D map**: left-drag orbits, right-drag pans, wheel zooms, `Home` resets the camera, `E` cycles height exaggeration (×1 / 1.5 / 2 / 3). Needs Direct3D 11; without it the view falls back to the 2D map.
 - **Other keys**: `Up` / `Down` step through the list, `+` / `-` zoom, `L` cycles the map layer, `F5` reloads, `F6` syncs.
+- **Deleting a session** (a test, an accidental start): right-click it in the list of Activity, Hockey, Map, Ski, Compare or 3D map and choose **Delete session…**, or select it and press `Del`. It is removed from this PC (its data and the FIT files in the data folder) and remembered, so later syncs, watch imports and file imports do not bring it back. It is **not** deleted from Garmin Connect or Strava; the confirmation says when it was sent to Strava. Delete it there yourself if it should not be kept.
 - Weight is stored in kg and shown in pounds.
 
 ## The Data menu
@@ -219,7 +220,8 @@ All timestamps are Unix seconds (UTC). `source` distinguishes `api` (Garmin Conn
 | `blood_pressure` | reading | Omron cuff: systolic, diastolic, pulse, cuff user slot, device |
 | `activity` | activity | Connect summary; `fit_file_id` links to the decoded FIT |
 | `activity_session`, `activity_lap`, `activity_record`, `activity_hrv` | per FIT file | 1 Hz records (position, altitude, HR, cadence, speed, power, temperature), laps, R-R intervals |
-| `fit_file` | file | provenance: path, type, device, time created |
+| `fit_file` | file | provenance: path, type, device, time created; kept for a deleted session's files so they count as imported |
+| `deleted_session` | session | start times deleted in gview; any FIT file holding one of these sessions is imported without its activity rows |
 | `sync_log` | kind × day | which days are already fetched (today is always refetched) |
 
 ## Building from source
@@ -234,7 +236,7 @@ ctest --preset debug                # after cmake --build --preset debug
 
 Everything compiles under `/W4 /WX` with the static CRT; there are no runtime DLL dependencies beyond Windows itself. The programs keep their data beside themselves, so a build folder starts empty: run `gview.exe` from there and it offers the same first-run setup.
 
-The code follows NASA/JPL's Power of 10 as far as a desktop app sensibly can: every loop over data has a fixed upper bound, no recursion, assertions on preconditions (`G_ASSERT` stays on in Release), every return value checked, no function longer than a screen, single-level pointer indirection. `python tools/rot_scan.py` reports long functions, assertion-free functions, unbounded loops, TODO markers, dead declarations and dropped return values; it runs before each release and should list nothing beyond a few dispatch tables. The dependency set is four vcpkg ports plus the Windows SDK, so there is little to age.
+The code follows NASA/JPL's Power of 10 as far as a desktop app sensibly can: every loop over data has a fixed upper bound, no recursion, assertions on preconditions (`G_ASSERT` stays on in Release), every return value checked, no function longer than a screen, single-level pointer indirection. `python tools/rot_scan.py` reports long functions, assertion-free functions, unbounded loops, leftover to-do markers, dead declarations and dropped return values; it runs before each release and should list nothing beyond a few dispatch tables. The dependency set is four vcpkg ports plus the Windows SDK, so there is little to age.
 
 ```text
 src/util     assertions, time (FIT epoch), CNG/DPAPI/base64/percent-encoding, zip reader (zlib), console, files and profile folders

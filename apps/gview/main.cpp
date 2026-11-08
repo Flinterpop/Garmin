@@ -30,6 +30,7 @@
 #include "queries.h"
 #include "resource.h"
 #include "store/db.h"
+#include "store/importer.h"
 #include "strava/auth.h"
 #include "strava/rules.h"
 #include "strava_ui.h"
@@ -80,6 +81,7 @@ constexpr int kIdmStravaConnect = 313;
 constexpr int kIdmStravaSettings = 314;
 constexpr int kIdmStravaSend = 315;
 constexpr int kIdmStravaDisconnect = 316;
+constexpr int kIdmDeleteSession = 317;
 constexpr int kFirstSyncDays = 30;  // a new login downloads this much history
 constexpr int kIdmProfileFirst = 500;  // + index into App::profile_names
 constexpr double kWheelZoomPerNotch = 0.8;
@@ -1028,6 +1030,136 @@ void on_strava_command(App& a, int id) {
   if (id == kIdmStravaDisconnect && gview::strava_disconnect(a.hwnd, base)) rebuild_menu(a);
 }
 
+// The one session the list's selection names: its start time and list label.
+// False where the list is not of sessions (days, trends, months, nights), on
+// a season overview row, or with two rows picked in Compare.
+bool selected_session(const App& a, int64_t& start_ts, std::string& label) {
+  const std::vector<int> picked = selected_indices(a);
+  if (picked.size() != 1 || picked.front() < 0) return false;
+  const size_t i = static_cast<size_t>(picked.front());
+  const std::vector<gview::ActivityEntry>* list = activity_list(a, a.mode);
+  if (list != nullptr && i < list->size()) {
+    start_ts = (*list)[i].start_ts;
+    label = (*list)[i].label;
+  } else if (a.mode == Mode::kHockey && i < a.games.size() && !a.games[i].season) {
+    start_ts = a.games[i].start_ts;
+    label = a.games[i].label;
+  } else if (a.mode == Mode::kSki && i < a.ski_days.size() && !a.ski_days[i].season) {
+    start_ts = a.ski_days[i].start_ts;
+    label = a.ski_days[i].label;
+  } else {
+    return false;
+  }
+  return start_ts > 0;
+}
+
+bool sent_to_strava(store::Db& db, int64_t start_ts) {
+  G_ASSERT(start_ts > 0);
+  store::Stmt s(db, "SELECT 1 FROM strava_push WHERE start_ts = ? AND state = 'done'");
+  G_REQUIRE_RET(s.ok(), false);
+  s.bind(1, start_ts);
+  return s.row();
+}
+
+// True when `p` lies inside `dir`; files elsewhere (an import's source, the
+// old AppData install) are not ours to delete.
+bool inside_folder(const std::filesystem::path& dir, const std::filesystem::path& p) {
+  std::error_code ec;
+  const std::filesystem::path d = std::filesystem::weakly_canonical(dir, ec);
+  if (ec) return false;
+  const std::filesystem::path f = std::filesystem::weakly_canonical(p, ec);
+  if (ec) return false;
+  const std::filesystem::path rel = f.lexically_relative(d);
+  return !rel.empty() && *rel.begin() != L"..";
+}
+
+// Removes the deleted session's FIT files under the data folder; returns how many could not be.
+int remove_session_files(const std::filesystem::path& data_dir, const std::vector<std::string>& paths) {
+  G_ASSERT(!data_dir.empty());
+  int failed = 0;
+  for (size_t i = 0; i < paths.size() && i < store::kMaxFilesPerSession; ++i) {
+    const std::filesystem::path p(paths[i]);  // stored with path::string(), the ANSI code page
+    if (!inside_folder(data_dir, p)) continue;
+    std::error_code ec;
+    std::filesystem::remove(p, ec);  // false without error when already gone
+    if (ec) ++failed;
+  }
+  G_ASSERT(failed >= 0);
+  return failed;
+}
+
+std::wstring delete_question(const std::string& label, bool on_strava) {
+  std::wstring q = L"Delete this session from this PC?\n\n" + plot::widen(label) +
+                   L"\n\nIts data and downloaded files here are removed, and later syncs and imports will "
+                   L"not bring it back.\n\nIt is not deleted from Garmin Connect";
+  q += on_strava ? L" or from Strava, where it was sent" : L"";
+  q += L". Delete it there too if it should not be kept.";
+  return q;
+}
+
+// List right-click > Delete session (or the Delete key): after asking, removes
+// the session from the database and its files from the data folder, and
+// remembers it so no sync or import restores it. Garmin and Strava keep theirs.
+void on_delete_session(App& a) {
+  int64_t start_ts = 0;
+  std::string label;
+  if (!selected_session(a, start_ts, label)) return;
+  const std::wstring q = delete_question(label, sent_to_strava(a.db, start_ts));
+  if (MessageBoxW(a.hwnd, q.c_str(), L"Garmin viewer", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+  std::vector<std::string> paths;
+  int64_t sessions = 0;
+  std::string err;
+  if (!store::delete_session(a.db, start_ts, label, paths, sessions, err)) {
+    MessageBoxW(a.hwnd, (L"Could not delete the session: " + plot::widen(err)).c_str(), L"Garmin viewer",
+                MB_ICONERROR);
+    return;
+  }
+  const int failed = remove_session_files(data_dir_of(a, a.profile), paths);
+  const std::vector<int> picked = selected_indices(a);
+  const int row = picked.empty() ? 0 : picked.front();
+  reload(a);
+  const int count = static_cast<int>(SendMessageW(a.list, LB_GETCOUNT, 0, 0));
+  select_only(a, std::max(0, std::min(row, count - 1)));
+  show_selection(a);
+  if (failed > 0) {
+    MessageBoxW(a.hwnd, L"The session was deleted, but some of its files could not be removed from the data "
+                        L"folder. It will not come back.", L"Garmin viewer", MB_ICONWARNING);
+  }
+}
+
+// Right-click on the list: picks the row under the cursor, then offers to delete its session.
+void on_list_context_menu(App& a, LPARAM lp) {
+  POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+  if (pt.x == -1 && pt.y == -1) {  // keyboard (Shift+F10): at the caret row
+    RECT r{};
+    const LRESULT caret = SendMessageW(a.list, LB_GETCARETINDEX, 0, 0);
+    if (SendMessageW(a.list, LB_GETITEMRECT, static_cast<WPARAM>(caret), reinterpret_cast<LPARAM>(&r)) == LB_ERR) {
+      return;
+    }
+    pt = POINT{r.left, r.bottom};
+    ClientToScreen(a.list, &pt);
+  } else {
+    POINT cl = pt;
+    ScreenToClient(a.list, &cl);
+    const LRESULT hit = SendMessageW(a.list, LB_ITEMFROMPOINT, 0, MAKELPARAM(cl.x, cl.y));
+    if (HIWORD(hit) != 0) return;  // below the last row
+    const std::vector<int> picked = selected_indices(a);
+    const int row = static_cast<int>(LOWORD(hit));
+    if (picked.size() != 1 || picked.front() != row) {
+      select_only(a, row);
+      show_selection(a);
+    }
+  }
+  int64_t start_ts = 0;
+  std::string label;
+  const bool deletable = selected_session(a, start_ts, label);
+  HMENU m = CreatePopupMenu();
+  G_REQUIRE_VOID(m != nullptr);
+  AppendMenuW(m, MF_STRING | (deletable ? MF_ENABLED : MF_GRAYED), kIdmDeleteSession, L"&Delete session...\tDel");
+  TrackPopupMenu(m, TPM_RIGHTBUTTON, pt.x, pt.y, 0, a.hwnd, nullptr);
+  DestroyMenu(m);
+}
+
 // Returns the mode for a View menu id / digit key, or false if it is not one.
 bool mode_for_id(int id, Mode& out) {
   if (id < kIdmViewDay || id > kIdmViewLast) return false;
@@ -1049,6 +1181,7 @@ bool on_data_command(App& a, int id) {
     case kIdmImportFiles: on_import_files(a); return true;
     case kIdmLogout: on_logout(a); return true;
     case kIdmRemovePerson: on_remove_person(a); return true;
+    case kIdmDeleteSession: on_delete_session(a); return true;
     case kIdmStravaConnect:
     case kIdmStravaSettings:
     case kIdmStravaSend:
@@ -1199,6 +1332,7 @@ bool on_key_down(App& a, WPARAM key) {
     case VK_OEM_MINUS: a.widget.zoom_at(mid, 1.0 / kKeyZoom); return true;
     case VK_F5: on_reload(a); return true;
     case VK_F6: on_sync_now(a); return true;
+    case VK_DELETE: on_delete_session(a); return true;
     case 'L':
       a.map_settings.base = map::next_base(a.map_settings);
       apply_layers(a);
@@ -1219,6 +1353,10 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_PAINT: paint(*a); return 0;
     case WM_ERASEBKGND: return 1;
     case WM_COMMAND: on_command(*a, hwnd, wp); return 0;
+    case WM_CONTEXTMENU:
+      if (reinterpret_cast<HWND>(wp) != a->list) break;
+      on_list_context_menu(*a, lp);
+      return 0;
     case WM_MOUSEWHEEL:
       if (on_mouse_wheel(*a, hwnd, wp, lp)) return 0;
       break;

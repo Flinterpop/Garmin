@@ -18,7 +18,8 @@ add_executable(garmin_tests
   test_profiles.cpp
   test_sync_account.cpp
   test_sync_files.cpp
-  test_strava.cpp)
+  test_strava.cpp
+  test_delete_session.cpp)
 target_link_libraries(garmin_tests PRIVATE synclib fitlib gclib plotlib maplib map3dlib analysislib gstore gutil Catch2::Catch2WithMain)
 include(Catch)
 catch_discover_tests(garmin_tests)

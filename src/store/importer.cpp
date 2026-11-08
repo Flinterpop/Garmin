@@ -661,6 +661,35 @@ class FitSink {
   std::string err_;
 };
 
+// Drops the activity rows derived from one FIT file (not the fit_file row).
+bool clear_derived(Db& db, int64_t file_id, std::string& err) {
+  G_ASSERT(file_id > 0);
+  const char* kClear[] = {"DELETE FROM activity_record WHERE fit_file_id = ?",
+                          "DELETE FROM activity_session WHERE fit_file_id = ?",
+                          "DELETE FROM activity_lap WHERE fit_file_id = ?",
+                          "DELETE FROM activity_hrv WHERE fit_file_id = ?"};
+  for (const char* sql : kClear) {
+    Stmt del(db, sql);
+    if (!stmt_ready(del, db, err)) return false;
+    if (!del.bind(1, file_id).run(err)) return false;
+  }
+  return true;
+}
+
+// A file holding a session the user deleted keeps no activity rows. Sets
+// `dropped` when it held one.
+bool drop_deleted_sessions(Db& db, int64_t file_id, bool& dropped, std::string& err) {
+  G_ASSERT(file_id > 0);
+  Stmt q(db,
+         "SELECT 1 FROM activity_session s JOIN deleted_session d ON d.start_ts = s.start_ts"
+         " WHERE s.fit_file_id = ? LIMIT 1");
+  if (!stmt_ready(q, db, err)) return false;
+  q.bind(1, file_id);
+  dropped = q.row();
+  q.reset();
+  return !dropped || clear_derived(db, file_id, err);
+}
+
 }  // namespace
 
 bool import_fit(Db& db, const std::string& path, const std::vector<uint8_t>& bytes,
@@ -690,15 +719,7 @@ bool import_fit(Db& db, const std::string& path, const std::vector<uint8_t>& byt
     file_id = db.last_insert_rowid();
   } else {
     // Re-import: drop the previous derived rows for this file.
-    const char* kClear[] = {"DELETE FROM activity_record WHERE fit_file_id = ?",
-                            "DELETE FROM activity_session WHERE fit_file_id = ?",
-                            "DELETE FROM activity_lap WHERE fit_file_id = ?",
-                            "DELETE FROM activity_hrv WHERE fit_file_id = ?"};
-    for (const char* sql : kClear) {
-      Stmt del(db, sql);
-      if (!stmt_ready(del, db, err)) return false;
-      if (!del.bind(1, file_id).run(err)) return false;
-    }
+    if (!clear_derived(db, file_id, err)) return false;
   }
 
   FitSink sink(db, file_id);
@@ -717,7 +738,6 @@ bool import_fit(Db& db, const std::string& path, const std::vector<uint8_t>& byt
     return false;
   }
   c.messages += static_cast<int64_t>(decoder->stats().messages);
-  c.rows += sink.rows();
 
   Stmt upd(db,
            "UPDATE fit_file SET file_type=?, time_created=?, serial_number=?, product_name=?,"
@@ -732,6 +752,13 @@ bool import_fit(Db& db, const std::string& path, const std::vector<uint8_t>& byt
       .bind(7, file_id);
   if (!upd.run(err)) return false;
 
+  bool dropped = false;
+  if (!drop_deleted_sessions(db, file_id, dropped, err)) return false;
+  if (dropped) {
+    c.skipped = true;  // the user deleted this session; the file stays known so it is not fetched again
+    return txn.commit(err);
+  }
+  c.rows += sink.rows();
   if (activity_id > 0) {
     Stmt link(db, "UPDATE activity SET fit_file_id=? WHERE id=?");
     if (!stmt_ready(link, db, err)) return false;
@@ -847,6 +874,67 @@ bool mark_sync(Db& db, const std::string& kind, const std::string& key, bool ok,
   Stmt s(db, "INSERT OR REPLACE INTO sync_log(kind, key, fetched_at, ok) VALUES(?,?,?,?)");
   if (!stmt_ready(s, db, err)) return false;
   return s.bind(1, kind).bind(2, key).bind(3, gutil::now_unix()).bind(4, ok ? 1 : 0).run(err);
+}
+
+// --------------------------------------------------------- deleted sessions
+
+bool fit_file_known(Db& db, const std::string& path) {
+  G_ASSERT(!path.empty());
+  Stmt s(db, "SELECT 1 FROM fit_file WHERE path = ?");
+  G_REQUIRE_RET(s.ok(), false);
+  s.bind(1, path);
+  return s.row();
+}
+
+namespace {
+
+struct HeldBy {
+  int64_t file_id = 0;
+  std::string path;
+};
+
+// The FIT files holding a session that starts at `start_ts`.
+bool files_holding(Db& db, int64_t start_ts, std::vector<HeldBy>& out, std::string& err) {
+  G_ASSERT(out.empty());
+  Stmt q(db,
+         "SELECT DISTINCT s.fit_file_id, f.path FROM activity_session s"
+         " JOIN fit_file f ON f.id = s.fit_file_id WHERE s.start_ts = ?");
+  if (!stmt_ready(q, db, err)) return false;
+  q.bind(1, start_ts);
+  for (size_t i = 0; i < kMaxFilesPerSession && q.row(); ++i) {
+    out.push_back(HeldBy{q.col_int(0), q.col_text(1)});
+  }
+  q.reset();
+  return true;
+}
+
+bool forget_file(Db& db, int64_t file_id, std::string& err) {
+  G_ASSERT(file_id > 0);
+  if (!clear_derived(db, file_id, err)) return false;
+  Stmt del(db, "DELETE FROM activity WHERE fit_file_id = ?");
+  if (!stmt_ready(del, db, err)) return false;
+  return del.bind(1, file_id).run(err);
+}
+
+}  // namespace
+
+bool delete_session(Db& db, int64_t start_ts, const std::string& label, std::vector<std::string>& paths,
+                    int64_t& sessions, std::string& err) {
+  G_REQUIRE_RET(db.is_open() && start_ts > 0, false);
+  G_ASSERT(paths.empty());
+  Txn txn(db);
+  if (!txn.begin(err)) return false;
+  std::vector<HeldBy> held;
+  if (!files_holding(db, start_ts, held, err)) return false;
+  for (const HeldBy& h : held) {
+    if (!forget_file(db, h.file_id, err)) return false;
+    paths.push_back(h.path);
+  }
+  Stmt rec(db, "INSERT OR REPLACE INTO deleted_session(start_ts, deleted_at, label) VALUES(?,?,?)");
+  if (!stmt_ready(rec, db, err)) return false;
+  if (!rec.bind(1, start_ts).bind(2, gutil::now_unix()).bind(3, label).run(err)) return false;
+  sessions = static_cast<int64_t>(held.size());
+  return txn.commit(err);
 }
 
 }  // namespace store

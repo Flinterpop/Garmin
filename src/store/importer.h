@@ -34,6 +34,21 @@ bool import_activity_list(Db& db, const nlohmann::json& j, ImportCounts& c, std:
 bool import_fit(Db& db, const std::string& path, const std::vector<uint8_t>& bytes,
                 int64_t activity_id, bool force, ImportCounts& c, std::string& err);
 
+// True when a FIT file at `path` has been imported (or was imported and its
+// session later deleted): the sync uses it to skip downloading it again.
+bool fit_file_known(Db& db, const std::string& path);
+
+// Deletes the session starting at `start_ts` from every FIT file that holds it
+// (the Connect download and the watch's copies), records it in deleted_session
+// so no later import restores it, and returns the files' paths in `paths` for
+// the caller to remove from disk. The fit_file rows stay (with no derived
+// rows) so the same paths count as imported. Monitoring, sleep and other
+// non-session rows the files carried are left alone. `label` is kept for the
+// record. Removed sessions are counted in `sessions`.
+constexpr size_t kMaxFilesPerSession = 16;
+bool delete_session(Db& db, int64_t start_ts, const std::string& label, std::vector<std::string>& paths,
+                    int64_t& sessions, std::string& err);
+
 // Blood-pressure CSV as exported by the Omron connect app:
 // timestamp,model,device,user,systolic,diastolic,pulse,movement,irregular_heartbeat
 // Timestamps are local time. Re-importing the same file is a no-op.

@@ -86,6 +86,11 @@ constexpr const char* kSchema[] = {
     " start_ts INTEGER PRIMARY KEY, state TEXT NOT NULL, strava_id INTEGER,"
     " attempts INTEGER NOT NULL DEFAULT 0, note TEXT, at INTEGER NOT NULL,"
     " sport_type TEXT, name TEXT)",
+    // Sessions the user deleted in gview (tests, accidental starts). Every FIT
+    // import drops a session starting at one of these times, so neither a sync,
+    // a watch import nor a file import brings it back.
+    "CREATE TABLE IF NOT EXISTS deleted_session("
+    " start_ts INTEGER PRIMARY KEY, deleted_at INTEGER NOT NULL, label TEXT)",
     "CREATE INDEX IF NOT EXISTS idx_activity_start ON activity(start_ts)",
     "CREATE INDEX IF NOT EXISTS idx_fit_file_type ON fit_file(file_type, time_created)",
 };
